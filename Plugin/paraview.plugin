@@ -1,0 +1,11 @@
+NAME
+  WARPMReader
+DESCRIPTION
+  Reader for WARPM HDF5 simulation output with high-order DG element support
+REQUIRES_MODULES
+  VTK::CommonCore
+  VTK::CommonDataModel
+  VTK::CommonExecutionModel
+  VTK::IOCore
+  VTK::FiltersCore
+  VTK::hdf5
