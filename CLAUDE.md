@@ -82,9 +82,11 @@ warpm_paraview_plugin/
     └── Reader/                 # VTK module subdirectory
         ├── vtk.module          # Module definition (NAME, DEPENDS, PRIVATE_DEPENDS)
         ├── CMakeLists.txt      # Module build: vtk_module_add_module()
-        ├── vtkWARPMReader.h    # Reader class header
-        ├── vtkWARPMReader.cxx  # Reader implementation
-        └── WARPMReader.xml     # ServerManager XML (registers .warpm extension)
+        ├── vtkWARPMReader.h    # Base reader class header
+        ├── vtkWARPMReader.cxx  # Base reader implementation
+        ├── vtkWARPMPhaseSpaceReader.h    # Phase space reader header
+        ├── vtkWARPMPhaseSpaceReader.cxx  # Phase space reader implementation
+        └── WARPMReader.xml     # ServerManager XML (registers both readers)
 ```
 
 ### Key Naming Constraint
@@ -96,31 +98,26 @@ warpm_paraview_plugin/
 
 The module name determines the export macro: `WARPMREADERCORE_EXPORT` and header `WARPMReaderCoreModule.h`.
 
-### FileSeriesReader Wrapper Architecture
+### Two Reader Classes
 
-To support file series (opening multiple .h5 files as a time series), the XML defines **two proxies**:
+The plugin provides two reader classes for different data types:
 
-1. **`WARPMReaderCore`** (`internal_sources` group) - Our actual `vtkWARPMReader` class
-2. **`WARPMReader`** (`sources` group) - A `vtkFileSeriesReader` wrapper exposed to the GUI
+1. **`vtkWARPMReader`** - Base reader for physical-space data (single output port)
+   - Handles standard electromagnetic field data (E, B fields)
+   - Single output: physical mesh with field variables
 
-The wrapper uses these key attributes:
-```xml
-<SourceProxy name="WARPMReader"
-             class="vtkFileSeriesReader"
-             si_class="vtkSIMetaReaderProxy"
-             file_name_method="SetFileName">
-  <SubProxy>
-    <Proxy name="Reader" proxygroup="internal_sources" proxyname="WARPMReaderCore"/>
-    <ExposedProperties>...</ExposedProperties>
-  </SubProxy>
-  <StringVectorProperty name="FileNames" command="AddFileName" .../>
-</SourceProxy>
-```
+2. **`vtkWARPMPhaseSpaceReader`** - Derived reader for Vlasov-Maxwell phase space data (two output ports)
+   - Port 0 ("Physical Space"): Physical mesh with physical-space variables
+   - Port 1 ("Velocity Space"): Velocity mesh at user-specified physical location
+   - Slice controls select which physical cell/node to extract velocity data from
 
-This enables:
-- Opening file groups (e.g., `maxwell_2d_..h5`) as time series
-- FileSeriesReader calls our reader once per file, aggregating time values
-- Physical time values are read from each file's `/timeData/time` attribute
+**Smart file detection:** The phase space reader's `CanReadFile()` returns true ONLY if the file contains phase space variables (domains with velocity coordinates). This prevents the reader selection dialog from appearing for typical physical-only files.
+
+**Domain type detection:** Domains are identified by their `CoordinateNames` attribute, not by name:
+- Physical dimensions: coordinates like "x", "y", "z"
+- Velocity dimensions: coordinates starting with "v" or "w"
+
+This makes the reader robust to arbitrary domain naming conventions.
 
 ### CMake Structure
 
@@ -148,7 +145,7 @@ paraview_add_plugin(WARPMReader
 ```cmake
 vtk_module_add_module(WARPMReaderCore
   FORCE_STATIC
-  CLASSES vtkWARPMReader)
+  CLASSES vtkWARPMReader vtkWARPMPhaseSpaceReader)
 paraview_add_server_manager_xmls(XMLS WARPMReader.xml)
 ```
 
@@ -160,6 +157,16 @@ paraview_add_server_manager_xmls(XMLS WARPMReader.xml)
 - `RequestInformation()` - Reports available time steps to ParaView
 - `RequestData()` - Reads HDF5 and populates VTK output
 - `ParseWarpmFile()` - Parses .warpm metadata, supports glob patterns
+- `IsPhysicalOnlyDomain()` - Checks if domain has no velocity coordinates
+- `IsVariableOnPhysicalDomain()` - Checks if variable's domain is physical-only
+
+**vtkWARPMPhaseSpaceReader** (inherits `vtkWARPMReader`)
+- Two output ports: Physical Space (port 0) and Velocity Space (port 1)
+- `SetPhysicalSliceIndices()` - Cell indices (x, y) for slicing phase space
+- `SetPhysicalNodeIndex()` - Node index within physical cell for slice
+- `CanReadFile()` - Returns true ONLY if phase space variables exist
+- Builds velocity-space mesh from phase space domain geometry
+- Uses HDF5 hyperslab selection to efficiently read sliced data
 
 ## Opening WARPM Data
 
@@ -203,19 +210,21 @@ Paths are relative to the .warpm file location.
 Each frame file contains:
 
 ```
-/domains/physical_space_domain/
+/domains/<domain_name>/
   - Kind: "rectilinearMesh_d" or "structuredQuadrilateral_d"
-  - ndims: 2
-  - numCells: [Nx, Ny]  (elements per dimension)
+  - ndims: 2 or 4 (physical + velocity dimensions)
+  - numCells: [Nx, Ny] or [Nx, Ny, Nvx, Nvy]
+  - CoordinateNames: ["x", "y"] or ["x", "y", "wx", "wy"]
   - VertexCoordinateExpressions: parametric mesh expressions
   - PeriodicDirs: which dimensions are periodic
 
 /variables/<variable_name>/
-  - ElementOrder: [px, py]  (polynomial order per dimension)
+  - OnDomain: "<domain_name>"
+  - ElementOrder: [px, py, ...]  (polynomial order per dimension)
   - ElementType: "WmGLTensorHypercubeRM" (row-major tensor)
-  - EntriesPerElement: (px+1)*(py+1) total nodes per element
-  - ComponentNames: ['Ex', 'Ey', 'Ez', ...]
-  - /data: shape (Nx, Ny, nodes_per_element, num_components)
+  - EntriesPerElement: product of (order+1) for all dimensions
+  - ComponentNames: ['Ex', 'Ey', 'Ez', ...] or ['proton_pdf']
+  - /data: shape (cells..., nodes_per_element, num_components)
 
 /timeData/
   - frame: integer frame number
@@ -226,11 +235,26 @@ Each frame file contains:
   - Version: "0.85"
 ```
 
+### Domain Type Detection
+
+Domain types are identified by the `CoordinateNames` attribute (not by domain name):
+- **Physical domain**: All coordinates are spatial (x, y, z)
+- **Phase space domain**: Mix of physical (x, y) and velocity (vx, vy or wx, wy) coordinates
+
+Velocity coordinates are identified by names starting with 'v' or 'w'.
+
+**Multiple domain handling:** If a file contains variables on multiple physical domains (or multiple phase space domains), only variables from the first domain encountered are loaded. Variables on other domains are skipped with a warning.
+
 ### Data Layout Example (2D Maxwell, order-3)
 - 5×5 grid of elements
 - Each element: 4×4 = 16 Gauss-Lobatto nodes
 - 6 components per node (Ex, Ey, Ez, Bx, By, Bz)
 - Data shape: `(5, 5, 16, 6)`
+
+### Phase Space Data Layout Example (2D-2V, order-2)
+- Physical: 3×3 cells, Velocity: 6×6 cells
+- Each element: 3×3×3×3 = 81 nodes (order-2 in 4D)
+- Data shape: `(3, 3, 6, 6, 81, num_components)`
 
 ## High-Order Element Support
 
@@ -307,16 +331,31 @@ The plugin includes `BuildWarpmToVTKLagrangeMapping()` to convert between orderi
 - Plugin output visually indistinguishable from Python conversion script (`convert_dg_to_structured_vtk.py`)
 - Confirms correct node ordering and data mapping
 
+### Phase 7: Phase Space Reader [COMPLETE ✓]
+- Derived `vtkWARPMPhaseSpaceReader` class with two output ports
+- Port 0: Physical space mesh with physical-only variables
+- Port 1: Velocity space mesh at user-specified physical location
+- Smart `CanReadFile()` returns true only for files with velocity dimensions
+- Coordinate-based domain detection (not hardcoded domain names)
+- Slice controls: Physical Slice Indices and Physical Node Index
+- HDF5 hyperslab selection for efficient sliced data reading
+- Warning when variables span multiple domains (only first domain loaded)
+
 ## Test Data
 
 ```
 /Users/noah/Downloads/test_macos_warpm/
-├── maxwell_2d.warpm          # Metadata file
-├── maxwell_2d_0000.h5        # Frame files
+├── maxwell_2d.warpm          # Metadata file for physical-space data
+├── maxwell_2d_0000.h5        # Physical-space frame files
 ├── maxwell_2d_0001.h5
 ├── ...
-└── maxwell_2d_0010.h5
+├── maxwell_2d_0010.h5
+└── phase_space_vars_0000.h5  # Phase space test file (2D-2V Vlasov-Maxwell)
 ```
+
+The phase space test file contains:
+- `EM_field_n`: Physical-space electromagnetic field data
+- `pdf_n`: Phase space distribution function (proton PDF)
 
 ## Reference Files
 
