@@ -1073,8 +1073,14 @@ int vtkWARPMPhaseSpaceReader::RequestData(
             {
               int idx = physDimIndices[i];
               int sliceVal = (i == 0) ? this->PhysicalSliceIndices[0] : this->PhysicalSliceIndices[1];
-              sliceVal = std::min(sliceVal, static_cast<int>(varDims[idx]) - 1);
-              sliceVal = std::max(sliceVal, 0);
+              int maxVal = static_cast<int>(varDims[idx]) - 1;
+              if (sliceVal < 0 || sliceVal > maxVal)
+              {
+                vtkWarningMacro("PhysicalSliceIndices[" << i << "] = " << sliceVal
+                  << " is out of range [0, " << maxVal << "], clamping");
+                sliceVal = std::min(sliceVal, maxVal);
+                sliceVal = std::max(sliceVal, 0);
+              }
               start[idx] = sliceVal;
               count[idx] = 1;
             }
@@ -1114,8 +1120,15 @@ int vtkWARPMPhaseSpaceReader::RequestData(
               physNodesPerElem *= (phaseElemOrderRead[physDimIndices[i]] + 1);
             }
 
-            int physNodeIdx = std::min(this->PhysicalNodeIndex, physNodesPerElem - 1);
-            physNodeIdx = std::max(physNodeIdx, 0);
+            int physNodeIdx = this->PhysicalNodeIndex;
+            int maxNodeIdx = physNodesPerElem - 1;
+            if (physNodeIdx < 0 || physNodeIdx > maxNodeIdx)
+            {
+              vtkWarningMacro("PhysicalNodeIndex = " << physNodeIdx
+                << " is out of range [0, " << maxNodeIdx << "], clamping");
+              physNodeIdx = std::min(physNodeIdx, maxNodeIdx);
+              physNodeIdx = std::max(physNodeIdx, 0);
+            }
 
             std::vector<vtkSmartPointer<vtkDoubleArray>> velFieldArrays;
             for (int c = 0; c < numComponents; ++c)

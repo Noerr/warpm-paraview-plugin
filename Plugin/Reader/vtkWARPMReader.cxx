@@ -326,6 +326,71 @@ int vtkWARPMReader::FillOutputPortInformation(int port, vtkInformation* info)
 }
 
 //----------------------------------------------------------------------------
+// Static helper: Check if an HDF5 file has any phase space variables
+// (variables on domains with velocity coordinates starting with 'v' or 'w')
+static bool HasPhaseSpaceVariables(const char* fname)
+{
+  hid_t file = H5Fopen(fname, H5F_ACC_RDONLY, H5P_DEFAULT);
+  if (file < 0) return false;
+
+  bool hasPhaseSpace = false;
+
+  hid_t domainsGroup = H5Gopen(file, "/domains", H5P_DEFAULT);
+  hid_t varsGroup = H5Gopen(file, "/variables", H5P_DEFAULT);
+
+  if (domainsGroup >= 0 && varsGroup >= 0)
+  {
+    // Collect variable names first
+    std::vector<std::string> varNames;
+    H5Literate(varsGroup, H5_INDEX_NAME, H5_ITER_NATIVE, nullptr,
+      [](hid_t, const char* name, const H5L_info_t*, void* opdata) -> herr_t {
+        static_cast<std::vector<std::string>*>(opdata)->push_back(name);
+        return 0;
+      }, &varNames);
+
+    // Check each variable's domain for velocity coordinates
+    for (const auto& varName : varNames)
+    {
+      if (hasPhaseSpace) break;
+
+      hid_t varGroup = H5Gopen(varsGroup, varName.c_str(), H5P_DEFAULT);
+      if (varGroup >= 0)
+      {
+        std::string domainName;
+        ReadStringAttribute(varGroup, "OnDomain", domainName);
+        H5Gclose(varGroup);
+
+        if (!domainName.empty())
+        {
+          hid_t domGroup = H5Gopen(domainsGroup, domainName.c_str(), H5P_DEFAULT);
+          if (domGroup >= 0)
+          {
+            std::vector<std::string> coordNames;
+            ReadStringArrayAttribute(domGroup, "CoordinateNames", coordNames);
+            H5Gclose(domGroup);
+
+            for (const auto& coord : coordNames)
+            {
+              if (!coord.empty() && (coord[0] == 'v' || coord[0] == 'w'))
+              {
+                hasPhaseSpace = true;
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (domainsGroup >= 0) H5Gclose(domainsGroup);
+  if (varsGroup >= 0) H5Gclose(varsGroup);
+  H5Fclose(file);
+
+  return hasPhaseSpace;
+}
+
+//----------------------------------------------------------------------------
 // Static helper: Check if an HDF5 file has WARPM structure
 static bool IsWarpmHDF5File(const char* fname)
 {
@@ -387,7 +452,12 @@ int vtkWARPMReader::CanReadFile(const char* fname)
   if (ext == ".h5" || ext == ".hdf5")
   {
     // Direct HDF5 file - check for WARPM structure
-    return IsWarpmHDF5File(fname) ? 1 : 0;
+    // Return false if file has phase space variables (use WARPMPhaseSpaceReader instead)
+    if (!IsWarpmHDF5File(fname))
+    {
+      return 0;
+    }
+    return HasPhaseSpaceVariables(fname) ? 0 : 1;
   }
   else if (ext == ".warpm")
   {
@@ -441,7 +511,13 @@ int vtkWARPMReader::CanReadFile(const char* fname)
                     filename.substr(filename.size() - suffix.size()) == suffix)
                 {
                   // Found a matching file - validate it
-                  return IsWarpmHDF5File(entry.path().string().c_str()) ? 1 : 0;
+                  std::string h5path = entry.path().string();
+                  if (!IsWarpmHDF5File(h5path.c_str()))
+                  {
+                    return 0;
+                  }
+                  // Return false if file has phase space variables
+                  return HasPhaseSpaceVariables(h5path.c_str()) ? 0 : 1;
                 }
               }
             }
@@ -454,7 +530,13 @@ int vtkWARPMReader::CanReadFile(const char* fname)
         std::filesystem::path framePath = baseDir / line;
         if (std::filesystem::exists(framePath))
         {
-          return IsWarpmHDF5File(framePath.string().c_str()) ? 1 : 0;
+          std::string h5path = framePath.string();
+          if (!IsWarpmHDF5File(h5path.c_str()))
+          {
+            return 0;
+          }
+          // Return false if file has phase space variables
+          return HasPhaseSpaceVariables(h5path.c_str()) ? 0 : 1;
         }
       }
     }
