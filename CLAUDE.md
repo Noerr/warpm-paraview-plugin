@@ -395,6 +395,16 @@ This is [GitLab issue #14869](https://gitlab.kitware.com/paraview/paraview/-/iss
 
 For Linux distribution, Kitware provides the `kitware/paraview_org-plugin-devel` Docker image for building binary-compatible plugins. No equivalent exists for macOS.
 
+### Per-Output-Port Property Visibility Not Supported
+
+The Phase Space Reader has properties (Physical Slice Indices, Physical Node Index) that only affect the Velocity Space output (Port 1), not the Physical Space output (Port 0). Ideally, these controls would only appear when the user selects the Velocity Space output in the Pipeline Browser.
+
+**Current behavior:** The slice properties are always visible in the Properties panel, grouped under "Velocity Space Location" with documentation noting they only affect Port 1.
+
+**Desired behavior:** Properties would be conditionally shown/hidden based on which output port is selected.
+
+**Why this isn't possible:** ParaView's Properties panel is source-centric, not port-centric. The ServerManager XML schema doesn't support nesting properties inside `<OutputPort>` elements or using PropertyWidgetDecorator to check which output port is selected. All properties belong to the source proxy as a whole. This is a fundamental limitation of ParaView's architecture.
+
 ## Debugging Tips
 
 1. **Plugin won't load**: Check that it was built against the same ParaView version

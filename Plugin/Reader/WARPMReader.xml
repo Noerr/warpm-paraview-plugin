@@ -126,7 +126,7 @@
         </Documentation>
       </StringVectorProperty>
 
-      <!-- Phase space slice properties -->
+      <!-- Phase space slice properties (affect Velocity Space output only) -->
       <IntVectorProperty name="PhysicalSliceIndices"
                          command="SetPhysicalSliceIndices"
                          number_of_elements="2"
@@ -136,6 +136,7 @@
         <Documentation>
           Cell indices in physical dimensions (x, y) for slicing phase space data.
           Specifies which cell in the physical mesh to extract velocity data from.
+          Only affects the Velocity Space output (Port 1).
         </Documentation>
       </IntVectorProperty>
 
@@ -148,8 +149,18 @@
         <Documentation>
           Node index within the physical cell (0 to nodes_per_physical_cell-1).
           Selects which GLL node in the physical slice to use for phase space data.
+          Only affects the Velocity Space output (Port 1).
         </Documentation>
       </IntVectorProperty>
+
+      <PropertyGroup label="Velocity Space Location" panel_visibility="default">
+        <Property name="PhysicalSliceIndices" />
+        <Property name="PhysicalNodeIndex" />
+        <Documentation>
+          Controls which physical location to extract velocity space data from.
+          These settings only affect the Velocity Space output (Port 1).
+        </Documentation>
+      </PropertyGroup>
 
       <OutputPort index="0" name="Physical Space" />
       <OutputPort index="1" name="Velocity Space" />
