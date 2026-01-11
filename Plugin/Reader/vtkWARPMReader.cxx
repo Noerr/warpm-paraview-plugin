@@ -850,11 +850,25 @@ int vtkWARPMReader::RequestData(
       {
         if (IsVariableOnPhysicalDomain(file, varGroup))
         {
-          enabledVars.push_back(name);
-          // Remember the domain name for geometry loading
+          std::string varDomainName;
+          ReadStringAttribute(varGroup, "OnDomain", varDomainName);
+
           if (physicalDomainName.empty())
           {
-            ReadStringAttribute(varGroup, "OnDomain", physicalDomainName);
+            // First physical variable - use its domain
+            physicalDomainName = varDomainName;
+            enabledVars.push_back(name);
+          }
+          else if (varDomainName == physicalDomainName)
+          {
+            // Same domain as first variable
+            enabledVars.push_back(name);
+          }
+          else
+          {
+            // Different domain - warn and skip
+            vtkWarningMacro("Skipping variable '" << name << "' on domain '"
+              << varDomainName << "' (differs from '" << physicalDomainName << "')");
           }
         }
         H5Gclose(varGroup);

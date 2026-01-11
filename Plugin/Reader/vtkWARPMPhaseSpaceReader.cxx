@@ -642,6 +642,7 @@ int vtkWARPMPhaseSpaceReader::RequestData(
   std::vector<std::string> physicalVars;
   std::vector<std::string> phaseSpaceVars;
   std::string physicalDomainName; // Will be set from the first physical variable found
+  std::string phaseSpaceDomainName; // Will be set from the first phase space variable found
 
   for (const auto& name : allVarNames)
   {
@@ -672,15 +673,42 @@ int vtkWARPMPhaseSpaceReader::RequestData(
 
     if (isPhaseSpace)
     {
-      phaseSpaceVars.push_back(name);
+      if (phaseSpaceDomainName.empty())
+      {
+        // First phase space variable - use its domain
+        phaseSpaceDomainName = varDomainName;
+        phaseSpaceVars.push_back(name);
+      }
+      else if (varDomainName == phaseSpaceDomainName)
+      {
+        // Same domain as first phase space variable
+        phaseSpaceVars.push_back(name);
+      }
+      else
+      {
+        // Different domain - warn and skip
+        vtkWarningMacro("Skipping variable '" << name << "' on domain '"
+          << varDomainName << "' (differs from '" << phaseSpaceDomainName << "')");
+      }
     }
     else
     {
-      physicalVars.push_back(name);
-      // Remember the domain name for geometry loading
       if (physicalDomainName.empty())
       {
+        // First physical variable - use its domain
         physicalDomainName = varDomainName;
+        physicalVars.push_back(name);
+      }
+      else if (varDomainName == physicalDomainName)
+      {
+        // Same domain as first physical variable
+        physicalVars.push_back(name);
+      }
+      else
+      {
+        // Different domain - warn and skip
+        vtkWarningMacro("Skipping variable '" << name << "' on domain '"
+          << varDomainName << "' (differs from '" << physicalDomainName << "')");
       }
     }
   }
@@ -911,9 +939,9 @@ int vtkWARPMPhaseSpaceReader::RequestData(
     vtkUnstructuredGrid* phaseOutput = vtkUnstructuredGrid::SafeDownCast(
       phaseOutInfo->Get(vtkDataObject::DATA_OBJECT()));
 
-    if (phaseOutput && domainsGroup >= 0)
+    if (phaseOutput && domainsGroup >= 0 && !phaseSpaceDomainName.empty())
     {
-      hid_t phaseDomGroup = H5Gopen(domainsGroup, this->PhaseSpaceDomainName.c_str(), H5P_DEFAULT);
+      hid_t phaseDomGroup = H5Gopen(domainsGroup, phaseSpaceDomainName.c_str(), H5P_DEFAULT);
       if (phaseDomGroup >= 0)
       {
         std::vector<int> phaseNumCells;
