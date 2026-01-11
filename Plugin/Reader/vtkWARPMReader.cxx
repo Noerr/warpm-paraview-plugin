@@ -145,6 +145,45 @@ static bool ReadStringArrayAttribute(hid_t loc, const char* name, std::vector<st
   return true;
 }
 
+// Check if a domain is physical-only (no velocity dimensions)
+// Velocity dimensions have coordinate names starting with 'v' or 'w'
+static bool IsPhysicalOnlyDomain(hid_t domainGroup)
+{
+  std::vector<std::string> coordNames;
+  if (!ReadStringArrayAttribute(domainGroup, "CoordinateNames", coordNames))
+  {
+    // If no CoordinateNames attribute, assume physical (legacy compatibility)
+    return true;
+  }
+
+  for (const auto& name : coordNames)
+  {
+    if (!name.empty() && (name[0] == 'v' || name[0] == 'w'))
+    {
+      return false; // Has velocity dimension
+    }
+  }
+  return true; // All coordinates are physical (x, y, z, etc.)
+}
+
+// Check if a variable's domain is physical-only
+static bool IsVariableOnPhysicalDomain(hid_t file, hid_t varGroup)
+{
+  std::string domainName;
+  if (!ReadStringAttribute(varGroup, "OnDomain", domainName))
+  {
+    return false;
+  }
+
+  std::string domainPath = "/domains/" + domainName;
+  hid_t domGroup = H5Gopen(file, domainPath.c_str(), H5P_DEFAULT);
+  if (domGroup < 0) return false;
+
+  bool isPhysical = IsPhysicalOnlyDomain(domGroup);
+  H5Gclose(domGroup);
+  return isPhysical;
+}
+
 // Parse coordinate expression like "x=-6.28... + 2.513...*k;"
 // Returns offset and scale such that coord = offset + scale * k
 static bool ParseCoordinateExpression(const std::string& expr, double& offset, double& scale)
@@ -678,7 +717,7 @@ int vtkWARPMReader::RequestInformation(
   this->ReadTimeValues();
 
   // Enumerate available variables from first HDF5 file
-  // Only add variables on "physical_space_domain" (skip phase space variables)
+  // Only add variables on physical-only domains (skip phase space variables)
   if (!this->FrameFiles.empty())
   {
     hid_t file = H5Fopen(this->FrameFiles[0].c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
@@ -695,19 +734,14 @@ int vtkWARPMReader::RequestInformation(
             return 0; // Continue iterating
           }, &varNames);
 
-        // Add only variables on physical_space_domain to selection
+        // Add only variables on physical-only domains (no velocity dimensions)
         for (const auto& name : varNames)
         {
-          // Check which domain this variable uses
+          // Check if variable is on a physical-only domain (no velocity dimensions)
           hid_t varGroup = H5Gopen(varsGroup, name.c_str(), H5P_DEFAULT);
           if (varGroup >= 0)
           {
-            std::string domainName;
-            ReadStringAttribute(varGroup, "OnDomain", domainName);
-            H5Gclose(varGroup);
-
-            // Only add if on physical_space_domain
-            if (domainName == "physical_space_domain")
+            if (IsVariableOnPhysicalDomain(file, varGroup))
             {
               if (!this->PointDataArraySelection->ArrayExists(name.c_str()))
               {
@@ -715,6 +749,7 @@ int vtkWARPMReader::RequestInformation(
                 this->PointDataArraySelection->EnableArray(name.c_str());
               }
             }
+            H5Gclose(varGroup);
           }
         }
 
@@ -795,7 +830,7 @@ int vtkWARPMReader::RequestData(
     return 0;
   }
 
-  // Collect enabled variable names that are on physical_space_domain
+  // Collect enabled variable names that are on physical-only domains
   std::vector<std::string> allVarNames;
   H5Literate(varsGroup, H5_INDEX_NAME, H5_ITER_NATIVE, nullptr,
     [](hid_t, const char* name, const H5L_info_t*, void* opdata) -> herr_t {
@@ -804,22 +839,25 @@ int vtkWARPMReader::RequestData(
     }, &allVarNames);
 
   std::vector<std::string> enabledVars;
+  std::string physicalDomainName; // Will be set from the first physical variable found
   for (const auto& name : allVarNames)
   {
     if (this->PointDataArraySelection->ArrayIsEnabled(name.c_str()))
     {
-      // Safety check: verify variable is on physical_space_domain
+      // Safety check: verify variable is on a physical-only domain
       hid_t varGroup = H5Gopen(varsGroup, name.c_str(), H5P_DEFAULT);
       if (varGroup >= 0)
       {
-        std::string domainName;
-        ReadStringAttribute(varGroup, "OnDomain", domainName);
-        H5Gclose(varGroup);
-
-        if (domainName == "physical_space_domain")
+        if (IsVariableOnPhysicalDomain(file, varGroup))
         {
           enabledVars.push_back(name);
+          // Remember the domain name for geometry loading
+          if (physicalDomainName.empty())
+          {
+            ReadStringAttribute(varGroup, "OnDomain", physicalDomainName);
+          }
         }
+        H5Gclose(varGroup);
       }
     }
   }
@@ -832,11 +870,12 @@ int vtkWARPMReader::RequestData(
     return 1;
   }
 
-  // Read domain info
-  hid_t domain = H5Gopen(file, "/domains/physical_space_domain", H5P_DEFAULT);
+  // Read domain info using the domain name from the first enabled variable
+  std::string domainPath = "/domains/" + physicalDomainName;
+  hid_t domain = H5Gopen(file, domainPath.c_str(), H5P_DEFAULT);
   if (domain < 0)
   {
-    vtkErrorMacro("Could not open physical_space_domain group");
+    vtkErrorMacro("Could not open domain group: " << physicalDomainName);
     H5Gclose(varsGroup);
     H5Fclose(file);
     return 0;

@@ -641,6 +641,7 @@ int vtkWARPMPhaseSpaceReader::RequestData(
   // Separate enabled variables into physical-space and phase-space
   std::vector<std::string> physicalVars;
   std::vector<std::string> phaseSpaceVars;
+  std::string physicalDomainName; // Will be set from the first physical variable found
 
   for (const auto& name : allVarNames)
   {
@@ -649,15 +650,15 @@ int vtkWARPMPhaseSpaceReader::RequestData(
       continue;
     }
 
-    // Check which domain this variable uses
+    // Check which domain this variable uses (based on coordinate names, not domain name)
     bool isPhaseSpace = false;
+    std::string varDomainName;
     hid_t varGroup = H5Gopen(varsGroup, name.c_str(), H5P_DEFAULT);
     if (varGroup >= 0)
     {
-      std::string domainName;
-      if (PSReadStringAttribute(varGroup, "OnDomain", domainName) && domainsGroup >= 0)
+      if (PSReadStringAttribute(varGroup, "OnDomain", varDomainName) && domainsGroup >= 0)
       {
-        hid_t domGroup = H5Gopen(domainsGroup, domainName.c_str(), H5P_DEFAULT);
+        hid_t domGroup = H5Gopen(domainsGroup, varDomainName.c_str(), H5P_DEFAULT);
         if (domGroup >= 0)
         {
           int numPhys = 0, numVel = 0;
@@ -676,6 +677,11 @@ int vtkWARPMPhaseSpaceReader::RequestData(
     else
     {
       physicalVars.push_back(name);
+      // Remember the domain name for geometry loading
+      if (physicalDomainName.empty())
+      {
+        physicalDomainName = varDomainName;
+      }
     }
   }
 
@@ -693,10 +699,11 @@ int vtkWARPMPhaseSpaceReader::RequestData(
   // ============================================================
   if (!physicalVars.empty())
   {
-    hid_t domain = H5Gopen(file, "/domains/physical_space_domain", H5P_DEFAULT);
+    std::string domainPath = "/domains/" + physicalDomainName;
+    hid_t domain = H5Gopen(file, domainPath.c_str(), H5P_DEFAULT);
     if (domain < 0)
     {
-      vtkErrorMacro("Could not open physical_space_domain group");
+      vtkErrorMacro("Could not open domain group: " << physicalDomainName);
       if (domainsGroup >= 0) H5Gclose(domainsGroup);
       H5Gclose(varsGroup);
       H5Fclose(file);
