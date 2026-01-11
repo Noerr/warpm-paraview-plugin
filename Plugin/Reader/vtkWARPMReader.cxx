@@ -1,6 +1,9 @@
 /**
  * @file vtkWARPMReader.cxx
  * @brief Implementation of VTK reader for WARPM HDF5 simulation output
+ *
+ * This is the base reader for physical-space (x, y, z) WARPM data.
+ * For phase space (Vlasov-Maxwell) data, use vtkWARPMPhaseSpaceReader.
  */
 
 #include "vtkWARPMReader.h"
@@ -265,6 +268,7 @@ vtkWARPMReader::vtkWARPMReader()
   : FileName(nullptr)
 {
   this->SetNumberOfInputPorts(0);
+  this->SetNumberOfOutputPorts(1); // Single port for physical space
   this->PointDataArraySelection = vtkSmartPointer<vtkDataArraySelection>::New();
 }
 
@@ -272,6 +276,14 @@ vtkWARPMReader::vtkWARPMReader()
 vtkWARPMReader::~vtkWARPMReader()
 {
   delete[] this->FileName;
+}
+
+//----------------------------------------------------------------------------
+int vtkWARPMReader::FillOutputPortInformation(int port, vtkInformation* info)
+{
+  // Single output port for physical space mesh
+  info->Set(vtkDataObject::DATA_TYPE_NAME(), "vtkUnstructuredGrid");
+  return 1;
 }
 
 //----------------------------------------------------------------------------
@@ -666,6 +678,7 @@ int vtkWARPMReader::RequestInformation(
   this->ReadTimeValues();
 
   // Enumerate available variables from first HDF5 file
+  // Only add variables on "physical_space_domain" (skip phase space variables)
   if (!this->FrameFiles.empty())
   {
     hid_t file = H5Fopen(this->FrameFiles[0].c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
@@ -682,13 +695,26 @@ int vtkWARPMReader::RequestInformation(
             return 0; // Continue iterating
           }, &varNames);
 
-        // Add to selection (enable all by default)
+        // Add only variables on physical_space_domain to selection
         for (const auto& name : varNames)
         {
-          if (!this->PointDataArraySelection->ArrayExists(name.c_str()))
+          // Check which domain this variable uses
+          hid_t varGroup = H5Gopen(varsGroup, name.c_str(), H5P_DEFAULT);
+          if (varGroup >= 0)
           {
-            this->PointDataArraySelection->AddArray(name.c_str());
-            this->PointDataArraySelection->EnableArray(name.c_str());
+            std::string domainName;
+            ReadStringAttribute(varGroup, "OnDomain", domainName);
+            H5Gclose(varGroup);
+
+            // Only add if on physical_space_domain
+            if (domainName == "physical_space_domain")
+            {
+              if (!this->PointDataArraySelection->ArrayExists(name.c_str()))
+              {
+                this->PointDataArraySelection->AddArray(name.c_str());
+                this->PointDataArraySelection->EnableArray(name.c_str());
+              }
+            }
           }
         }
 
@@ -698,17 +724,19 @@ int vtkWARPMReader::RequestInformation(
     }
   }
 
-  vtkInformation* outInfo = outputVector->GetInformationObject(0);
-
-  // Report available time steps using actual physical time values
+  // Report available time steps
   if (!this->TimeValues.empty())
   {
-    outInfo->Set(vtkStreamingDemandDrivenPipeline::TIME_STEPS(),
-                 this->TimeValues.data(),
-                 static_cast<int>(this->TimeValues.size()));
+    vtkInformation* outInfo = outputVector->GetInformationObject(0);
+    if (outInfo)
+    {
+      outInfo->Set(vtkStreamingDemandDrivenPipeline::TIME_STEPS(),
+                   this->TimeValues.data(),
+                   static_cast<int>(this->TimeValues.size()));
 
-    double timeRange[2] = { this->TimeValues.front(), this->TimeValues.back() };
-    outInfo->Set(vtkStreamingDemandDrivenPipeline::TIME_RANGE(), timeRange, 2);
+      double timeRange[2] = { this->TimeValues.front(), this->TimeValues.back() };
+      outInfo->Set(vtkStreamingDemandDrivenPipeline::TIME_RANGE(), timeRange, 2);
+    }
   }
   else
   {
@@ -758,11 +786,58 @@ int vtkWARPMReader::RequestData(
     return 0;
   }
 
+  // Open groups
+  hid_t varsGroup = H5Gopen(file, "/variables", H5P_DEFAULT);
+  if (varsGroup < 0)
+  {
+    vtkErrorMacro("Could not open variables group");
+    H5Fclose(file);
+    return 0;
+  }
+
+  // Collect enabled variable names that are on physical_space_domain
+  std::vector<std::string> allVarNames;
+  H5Literate(varsGroup, H5_INDEX_NAME, H5_ITER_NATIVE, nullptr,
+    [](hid_t, const char* name, const H5L_info_t*, void* opdata) -> herr_t {
+      static_cast<std::vector<std::string>*>(opdata)->push_back(name);
+      return 0;
+    }, &allVarNames);
+
+  std::vector<std::string> enabledVars;
+  for (const auto& name : allVarNames)
+  {
+    if (this->PointDataArraySelection->ArrayIsEnabled(name.c_str()))
+    {
+      // Safety check: verify variable is on physical_space_domain
+      hid_t varGroup = H5Gopen(varsGroup, name.c_str(), H5P_DEFAULT);
+      if (varGroup >= 0)
+      {
+        std::string domainName;
+        ReadStringAttribute(varGroup, "OnDomain", domainName);
+        H5Gclose(varGroup);
+
+        if (domainName == "physical_space_domain")
+        {
+          enabledVars.push_back(name);
+        }
+      }
+    }
+  }
+
+  if (enabledVars.empty())
+  {
+    vtkWarningMacro("No physical-space variables enabled (use WARPM Phase Space Reader for phase space data)");
+    H5Gclose(varsGroup);
+    H5Fclose(file);
+    return 1;
+  }
+
   // Read domain info
   hid_t domain = H5Gopen(file, "/domains/physical_space_domain", H5P_DEFAULT);
   if (domain < 0)
   {
-    vtkErrorMacro("Could not open domain group");
+    vtkErrorMacro("Could not open physical_space_domain group");
+    H5Gclose(varsGroup);
     H5Fclose(file);
     return 0;
   }
@@ -780,6 +855,7 @@ int vtkWARPMReader::RequestData(
   if (ndims < 2 || numCells.size() < 2 || coordExprs.size() < 2)
   {
     vtkErrorMacro("Invalid domain dimensions");
+    H5Gclose(varsGroup);
     H5Fclose(file);
     return 0;
   }
@@ -788,44 +864,6 @@ int vtkWARPMReader::RequestData(
   double xOffset = 0, xScale = 1, yOffset = 0, yScale = 1;
   ParseCoordinateExpression(coordExprs[0], xOffset, xScale);
   ParseCoordinateExpression(coordExprs[1], yOffset, yScale);
-
-  int nx = numCells[0];
-  int ny = numCells[1];
-
-  // Open variables group
-  hid_t varsGroup = H5Gopen(file, "/variables", H5P_DEFAULT);
-  if (varsGroup < 0)
-  {
-    vtkErrorMacro("Could not open variables group");
-    H5Fclose(file);
-    return 0;
-  }
-
-  // Collect all variable names
-  std::vector<std::string> allVarNames;
-  H5Literate(varsGroup, H5_INDEX_NAME, H5_ITER_NATIVE, nullptr,
-    [](hid_t, const char* name, const H5L_info_t*, void* opdata) -> herr_t {
-      static_cast<std::vector<std::string>*>(opdata)->push_back(name);
-      return 0; // Continue iterating
-    }, &allVarNames);
-
-  // Filter to only enabled variables
-  std::vector<std::string> enabledVars;
-  for (const auto& name : allVarNames)
-  {
-    if (this->PointDataArraySelection->ArrayIsEnabled(name.c_str()))
-    {
-      enabledVars.push_back(name);
-    }
-  }
-
-  if (enabledVars.empty())
-  {
-    vtkWarningMacro("No variables enabled");
-    H5Gclose(varsGroup);
-    H5Fclose(file);
-    return 1; // Not an error, just nothing to load
-  }
 
   // Read metadata from first enabled variable (for geometry)
   hid_t firstVarGroup = H5Gopen(varsGroup, enabledVars[0].c_str(), H5P_DEFAULT);

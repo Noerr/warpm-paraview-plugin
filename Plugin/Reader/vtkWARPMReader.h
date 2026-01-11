@@ -8,6 +8,8 @@
  *
  * High-order discontinuous Galerkin (DG) elements are mapped to VTK Lagrange
  * cell types for accurate visualization.
+ *
+ * For phase space (Vlasov-Maxwell) data, use vtkWARPMPhaseSpaceReader instead.
  */
 
 #ifndef vtkWARPMReader_h
@@ -79,11 +81,9 @@ protected:
                   vtkInformationVector** inputVector,
                   vtkInformationVector* outputVector) override;
 
-  char* FileName;
+  int FillOutputPortInformation(int port, vtkInformation* info) override;
 
-private:
-  vtkWARPMReader(const vtkWARPMReader&) = delete;
-  void operator=(const vtkWARPMReader&) = delete;
+  char* FileName;
 
   /**
    * Parse the .warpm file to get list of HDF5 frame files.
@@ -128,6 +128,10 @@ private:
 
   // Variable (point array) selection
   vtkSmartPointer<vtkDataArraySelection> PointDataArraySelection;
+
+private:
+  vtkWARPMReader(const vtkWARPMReader&) = delete;
+  void operator=(const vtkWARPMReader&) = delete;
 };
 
 #endif
