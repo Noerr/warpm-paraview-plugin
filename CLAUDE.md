@@ -106,9 +106,10 @@ The plugin provides two reader classes for different data types:
    - Handles standard electromagnetic field data (E, B fields)
    - Single output: physical mesh with field variables
 
-2. **`vtkWARPMPhaseSpaceReader`** - Derived reader for Vlasov-Maxwell phase space data (two output ports)
+2. **`vtkWARPMPhaseSpaceReader`** - Derived reader for Vlasov-Maxwell phase space data (three output ports)
    - Port 0 ("Physical Space"): Physical mesh with physical-space variables
    - Port 1 ("Velocity Space"): Velocity mesh at user-specified physical location
+   - Port 2 ("Slice Position"): Single-point marker showing where velocity slice is taken
    - Slice controls select which physical cell/node to extract velocity data from
 
 **Smart file detection:** The phase space reader's `CanReadFile()` returns true ONLY if the file contains phase space variables (domains with velocity coordinates). This prevents the reader selection dialog from appearing for typical physical-only files.
@@ -161,12 +162,13 @@ paraview_add_server_manager_xmls(XMLS WARPMReader.xml)
 - `IsVariableOnPhysicalDomain()` - Checks if variable's domain is physical-only
 
 **vtkWARPMPhaseSpaceReader** (inherits `vtkWARPMReader`)
-- Two output ports: Physical Space (port 0) and Velocity Space (port 1)
-- `SetPhysicalSliceIndices()` - Cell indices (x, y) for slicing phase space
+- Three output ports: Physical Space (port 0), Velocity Space (port 1), Slice Position (port 2)
+- `SetPhysicalSliceIndices()` - Cell indices for slicing phase space (currently 2 indices for 2D physical)
 - `SetPhysicalNodeIndex()` - Node index within physical cell for slice
 - `CanReadFile()` - Returns true ONLY if phase space variables exist
 - Builds velocity-space mesh from phase space domain geometry
 - Uses HDF5 hyperslab selection to efficiently read sliced data
+- Port 2 outputs a single vtkPolyData point showing the slice location in physical space
 
 ## Opening WARPM Data
 
@@ -256,6 +258,42 @@ Velocity coordinates are identified by names starting with 'v' or 'w'.
 - Each element: 3×3×3×3 = 81 nodes (order-2 in 4D)
 - Data shape: `(3, 3, 6, 6, 81, num_components)`
 
+### Coordinate Expressions (VertexCoordinateExpressions)
+
+WARPM stores mesh geometry as parametric expressions rather than explicit vertex coordinates. The `VertexCoordinateExpressions` attribute is an array of strings, one per dimension, defining how vertex positions are computed from cell indices.
+
+**Format:** Each expression is a function `x(k)` where `k` is the vertex index. The expressions use WARPM's HIP-based expression language, which supports:
+- Standard C arithmetic operators: `+`, `-`, `*`, `/`
+- Math functions: `sin`, `cos`, `exp`, `log`, `sqrt`, `pow`, etc.
+- The variable `k` representing the vertex index
+
+**Example expressions:**
+```
+# Physical space (polynomial mesh stretching):
+x=-5.42127659574468e-04 + 1.11523404255319e-03*k + -9.29361702127659e-05*k*k + 6.19574468085106e-05*k*k*k;
+
+# Velocity space (symmetric about zero):
+x= k*(1.48148148148148e-02 *k*k + 2.00000000000000e-01 );
+```
+
+**startIndices attribute:** The `k` values don't always start at 0. The `startIndices` attribute specifies the starting index for each dimension:
+- Physical dimensions typically start at 0
+- Velocity dimensions often use symmetric ranges (e.g., `startIndices = [-3, -3]` for a 6-cell velocity grid spanning k = -3 to +3)
+
+**Evaluation:** The plugin uses VTK's embedded Python interpreter with numpy for vectorized expression evaluation:
+```python
+import numpy as np
+from math import *
+k = np.arange(startIndex, startIndex + numCells + 1, dtype=np.float64)
+result = <expression_rhs>  # e.g., k*(0.0148*k*k + 0.2)
+```
+
+This approach:
+- Handles arbitrary mathematical expressions (not just polynomials)
+- Supports all standard math functions via `from math import *`
+- Uses numpy vectorization for efficiency (single Python call per dimension)
+- Correctly handles non-zero startIndices for symmetric velocity grids
+
 ## High-Order Element Support
 
 ### VTK Lagrange Cell Types
@@ -332,14 +370,34 @@ The plugin includes `BuildWarpmToVTKLagrangeMapping()` to convert between orderi
 - Confirms correct node ordering and data mapping
 
 ### Phase 7: Phase Space Reader [COMPLETE ✓]
-- Derived `vtkWARPMPhaseSpaceReader` class with two output ports
+- Derived `vtkWARPMPhaseSpaceReader` class with three output ports
 - Port 0: Physical space mesh with physical-only variables
 - Port 1: Velocity space mesh at user-specified physical location
+- Port 2: Slice position probe marker (single point in physical space)
 - Smart `CanReadFile()` returns true only for files with velocity dimensions
 - Coordinate-based domain detection (not hardcoded domain names)
 - Slice controls: Physical Slice Indices and Physical Node Index
 - HDF5 hyperslab selection for efficient sliced data reading
 - Warning when variables span multiple domains (only first domain loaded)
+- Python-based coordinate expression evaluation (handles polynomial and math expressions)
+
+**Current limitation:** The phase space reader currently assumes 2D physical space + 2D velocity space (4D total). The code has hardcoded assumptions about 2 physical dimensions and 2 velocity dimensions in several places:
+- `PhysicalSliceIndices` is a 2-element array
+- Mesh building loops assume 2D (nested x/y loops)
+- VTK cell types are 2D (VTK_LAGRANGE_QUADRILATERAL)
+
+### Phase 8: Arbitrary Dimension Support [PLANNED]
+Generalize from 2D+2D to support all valid combinations:
+- Physical dimensions: 1D, 2D, or 3D
+- Velocity dimensions: 1D, 2D, or 3D
+- Phase space total: 2D to 6D
+
+This requires:
+- Dynamic `PhysicalSliceIndices` size based on detected physical dimensions
+- Generalized mesh building for 1D/2D/3D (lines, quads, hexes)
+- Appropriate VTK cell types: `VTK_LAGRANGE_CURVE`, `VTK_LAGRANGE_QUADRILATERAL`, `VTK_LAGRANGE_HEXAHEDRON`
+- Generalized node ordering mappings for each dimension count
+- Dynamic hyperslab selection based on actual dimension counts
 
 ## Test Data
 
@@ -507,3 +565,10 @@ print('Cells:', output.GetNumberOfCells())
 - Use Kitware's `kitware/paraview_org-plugin-devel` Docker image
 - Build binary-compatible plugins for official Linux ParaView releases
 - CI/CD pipeline for automated plugin builds
+
+### Arbitrary Phase Space Dimensions
+The current implementation assumes 2D physical + 2D velocity (4D phase space). Generalization needed:
+- Support 1D, 2D, or 3D physical space
+- Support 1D, 2D, or 3D velocity space
+- Total phase space dimensions: 2 to 6
+- See "Phase 8" in Implementation Phases for details

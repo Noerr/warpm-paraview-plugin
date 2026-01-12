@@ -9,6 +9,7 @@
  * Output ports:
  * - Port 0: Physical space mesh with physical-space variables
  * - Port 1: Velocity space mesh with phase-space variables (sliced at specified physical location)
+ * - Port 2: Probe location (single point showing where the slice is taken in physical space)
  */
 
 #ifndef vtkWARPMPhaseSpaceReader_h

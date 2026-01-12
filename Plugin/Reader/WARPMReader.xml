@@ -164,6 +164,7 @@
 
       <OutputPort index="0" name="Physical Space" />
       <OutputPort index="1" name="Velocity Space" />
+      <OutputPort index="2" name="Slice Position" />
 
       <Hints>
         <ReaderFactory extensions="warpm h5"

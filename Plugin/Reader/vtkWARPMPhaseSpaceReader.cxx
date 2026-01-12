@@ -10,6 +10,7 @@
 #include <vtkObjectFactory.h>
 #include <vtkStreamingDemandDrivenPipeline.h>
 #include <vtkUnstructuredGrid.h>
+#include <vtkPolyData.h>
 #include <vtkPoints.h>
 #include <vtkCellArray.h>
 #include <vtkCellType.h>
@@ -18,15 +19,18 @@
 #include <vtkDataArraySelection.h>
 #include <vtkSmartPointer.h>
 #include <vtkNew.h>
+#include <vtkVertex.h>
 
 #include "vtk_hdf5.h"
+
+// For VTK's embedded Python interpreter (string-based communication only)
+#include <vtkPythonInterpreter.h>
 
 #include <fstream>
 #include <sstream>
 #include <algorithm>
 #include <filesystem>
 #include <cmath>
-#include <regex>
 
 vtkStandardNewMacro(vtkWARPMPhaseSpaceReader);
 
@@ -141,17 +145,95 @@ static bool PSReadDoubleAttribute(hid_t loc, const char* name, double& value)
   return status >= 0;
 }
 
-// Parse coordinate expression like "x=-6.28... + 2.513...*k;"
-static bool PSParseCoordinateExpression(const std::string& expr, double& offset, double& scale)
+//----------------------------------------------------------------------------
+// Python-based coordinate expression evaluator (vectorized with numpy)
+//
+// WARPM VertexCoordinateExpressions are functions x(k) where k is the vertex
+// index. The vertex index k ranges from startIndex to startIndex + numCells.
+// startIndex is NOT always 0 - it can be negative (e.g., velocity dimensions
+// often use symmetric ranges like -3 to +3).
+//----------------------------------------------------------------------------
+
+// Compute all vertex positions for a dimension by evaluating the coordinate
+// expression using numpy vectorization. Returns positions for vertices at
+// k = startIndex, startIndex+1, ..., startIndex+numCells (numCells+1 values).
+//
+// Uses string-based communication with Python to avoid linking against Python directly.
+static std::vector<double> PSComputeVertexPositions(
+  const std::string& expr, int startIndex, int numCells)
 {
-  std::regex pattern(R"(x\s*=\s*([+-]?\d+\.?\d*(?:[eE][+-]?\d+)?)\s*\+\s*([+-]?\d+\.?\d*(?:[eE][+-]?\d+)?)\s*\*\s*k)");
-  std::smatch match;
-  if (std::regex_search(expr, match, pattern)) {
-    offset = std::stod(match[1].str());
-    scale = std::stod(match[2].str());
-    return true;
+  int numVertices = numCells + 1;
+  std::vector<double> positions(numVertices);
+
+  // Ensure Python is initialized
+  if (!vtkPythonInterpreter::IsInitialized())
+  {
+    vtkPythonInterpreter::Initialize();
   }
-  return false;
+
+  // Extract RHS of expression (after "x=" or similar)
+  std::string rhs = expr;
+  size_t eqPos = expr.find('=');
+  if (eqPos != std::string::npos)
+  {
+    rhs = expr.substr(eqPos + 1);
+  }
+
+  // Remove trailing semicolon and whitespace
+  while (!rhs.empty() && (rhs.back() == ';' || rhs.back() == ' ' || rhs.back() == '\t'))
+  {
+    rhs.pop_back();
+  }
+
+  // Build Python code for vectorized evaluation
+  // Store result as comma-separated string
+  std::ostringstream pyCode;
+  pyCode << "import numpy as np\n";
+  pyCode << "from math import *\n";
+  pyCode << "k = np.arange(" << startIndex << ", " << (startIndex + numCells + 1) << ", dtype=np.float64)\n";
+  pyCode << "_warpm_result = " << rhs << "\n";
+  pyCode << "if np.isscalar(_warpm_result):\n";
+  pyCode << "    _warpm_result = np.full(" << numVertices << ", _warpm_result)\n";
+  pyCode << "_warpm_result_str = ','.join(f'{v:.17g}' for v in _warpm_result)\n";
+
+  // Execute the Python code
+  vtkPythonInterpreter::RunSimpleString(pyCode.str().c_str());
+
+  // Write result to temp file and read it back
+  std::string tempFile = "/tmp/_warpm_ps_vertex_positions.txt";
+  std::ostringstream writeCode;
+  writeCode << "with open('" << tempFile << "', 'w') as f:\n";
+  writeCode << "    f.write(_warpm_result_str)\n";
+  writeCode << "del _warpm_result, _warpm_result_str\n";
+
+  vtkPythonInterpreter::RunSimpleString(writeCode.str().c_str());
+
+  // Read the result from the temp file
+  std::ifstream resultFile(tempFile);
+  if (resultFile.is_open())
+  {
+    std::string resultStr;
+    std::getline(resultFile, resultStr);
+    resultFile.close();
+
+    // Parse comma-separated values
+    std::istringstream iss(resultStr);
+    std::string token;
+    size_t idx = 0;
+    while (std::getline(iss, token, ',') && idx < static_cast<size_t>(numVertices))
+    {
+      try
+      {
+        positions[idx++] = std::stod(token);
+      }
+      catch (...)
+      {
+        // Keep default value of 0.0
+      }
+    }
+  }
+
+  return positions;
 }
 
 // Gauss-Lobatto-Legendre nodes on [-1, 1] for orders 1-8
@@ -359,8 +441,11 @@ vtkWARPMPhaseSpaceReader::vtkWARPMPhaseSpaceReader()
 {
   this->PhysicalSliceIndices[0] = 0;
   this->PhysicalSliceIndices[1] = 0;
-  // Override base class: set 2 output ports
-  this->SetNumberOfOutputPorts(2);
+  // Override base class: set 3 output ports
+  // Port 0: Physical space mesh
+  // Port 1: Velocity space mesh
+  // Port 2: Probe location (single point)
+  this->SetNumberOfOutputPorts(3);
 }
 
 //----------------------------------------------------------------------------
@@ -371,10 +456,18 @@ vtkWARPMPhaseSpaceReader::~vtkWARPMPhaseSpaceReader()
 //----------------------------------------------------------------------------
 int vtkWARPMPhaseSpaceReader::FillOutputPortInformation(int port, vtkInformation* info)
 {
-  // Both ports output vtkUnstructuredGrid
-  // Port 0: Physical space mesh
-  // Port 1: Velocity space mesh
-  info->Set(vtkDataObject::DATA_TYPE_NAME(), "vtkUnstructuredGrid");
+  if (port == 2)
+  {
+    // Port 2: Probe location (single point showing slice position in physical space)
+    info->Set(vtkDataObject::DATA_TYPE_NAME(), "vtkPolyData");
+  }
+  else
+  {
+    // Ports 0 and 1: vtkUnstructuredGrid
+    // Port 0: Physical space mesh
+    // Port 1: Velocity space mesh
+    info->Set(vtkDataObject::DATA_TYPE_NAME(), "vtkUnstructuredGrid");
+  }
   return 1;
 }
 
@@ -740,10 +833,12 @@ int vtkWARPMPhaseSpaceReader::RequestData(
 
     int ndims = 0;
     std::vector<int> numCells;
+    std::vector<int> startIndices;
     std::vector<std::string> coordExprs;
 
     PSReadIntAttribute(domain, "ndims", ndims);
     PSReadIntArrayAttribute(domain, "numCells", numCells);
+    PSReadIntArrayAttribute(domain, "startIndices", startIndices);
     PSReadStringArrayAttribute(domain, "VertexCoordinateExpressions", coordExprs);
 
     H5Gclose(domain);
@@ -757,9 +852,15 @@ int vtkWARPMPhaseSpaceReader::RequestData(
       return 0;
     }
 
-    double xOffset = 0, xScale = 1, yOffset = 0, yScale = 1;
-    PSParseCoordinateExpression(coordExprs[0], xOffset, xScale);
-    PSParseCoordinateExpression(coordExprs[1], yOffset, yScale);
+    // Default startIndices to 0 if not present
+    if (startIndices.size() < 2)
+    {
+      startIndices.resize(ndims, 0);
+    }
+
+    // Evaluate coordinate expressions to get vertex positions
+    std::vector<double> vertexX = PSComputeVertexPositions(coordExprs[0], startIndices[0], numCells[0]);
+    std::vector<double> vertexY = PSComputeVertexPositions(coordExprs[1], startIndices[1], numCells[1]);
 
     hid_t firstVarGroup = H5Gopen(varsGroup, physicalVars[0].c_str(), H5P_DEFAULT);
     std::vector<int> elementOrder;
@@ -806,10 +907,11 @@ int vtkWARPMPhaseSpaceReader::RequestData(
       {
         for (int ex = 0; ex < dataNx; ++ex)
         {
-          double elemXMin = xOffset + xScale * ex;
-          double elemXMax = xOffset + xScale * (ex + 1);
-          double elemYMin = yOffset + yScale * ey;
-          double elemYMax = yOffset + yScale * (ey + 1);
+          // Cell bounds from pre-computed vertex positions
+          double elemXMin = vertexX[ex];
+          double elemXMax = vertexX[ex + 1];
+          double elemYMin = vertexY[ey];
+          double elemYMax = vertexY[ey + 1];
 
           int elemStartIdx = (ey * dataNx + ex) * nodesPerElement;
 
@@ -945,12 +1047,20 @@ int vtkWARPMPhaseSpaceReader::RequestData(
       if (phaseDomGroup >= 0)
       {
         std::vector<int> phaseNumCells;
+        std::vector<int> phaseStartIndices;
         std::vector<std::string> phaseCoordExprs;
         PSReadIntArrayAttribute(phaseDomGroup, "numCells", phaseNumCells);
+        PSReadIntArrayAttribute(phaseDomGroup, "startIndices", phaseStartIndices);
         PSReadStringArrayAttribute(phaseDomGroup, "VertexCoordinateExpressions", phaseCoordExprs);
 
         std::vector<std::string> coordNames;
         PSReadStringArrayAttribute(phaseDomGroup, "CoordinateNames", coordNames);
+
+        // Default startIndices if not present
+        if (phaseStartIndices.size() < coordNames.size())
+        {
+          phaseStartIndices.resize(coordNames.size(), 0);
+        }
 
         std::vector<int> velDimIndices;
         std::vector<int> physDimIndices;
@@ -971,11 +1081,16 @@ int vtkWARPMPhaseSpaceReader::RequestData(
           int velNx = phaseNumCells[velDimIndices[0]];
           int velNy = phaseNumCells[velDimIndices[1]];
 
-          double velXOffset = 0, velXScale = 1, velYOffset = 0, velYScale = 1;
-          if (velDimIndices[0] < static_cast<int>(phaseCoordExprs.size()))
-            PSParseCoordinateExpression(phaseCoordExprs[velDimIndices[0]], velXOffset, velXScale);
-          if (velDimIndices[1] < static_cast<int>(phaseCoordExprs.size()))
-            PSParseCoordinateExpression(phaseCoordExprs[velDimIndices[1]], velYOffset, velYScale);
+          // Compute velocity vertex positions
+          std::vector<double> velVertexX = PSComputeVertexPositions(
+            phaseCoordExprs[velDimIndices[0]],
+            phaseStartIndices[velDimIndices[0]],
+            phaseNumCells[velDimIndices[0]]);
+
+          std::vector<double> velVertexY = PSComputeVertexPositions(
+            phaseCoordExprs[velDimIndices[1]],
+            phaseStartIndices[velDimIndices[1]],
+            phaseNumCells[velDimIndices[1]]);
 
           hid_t firstPhaseVar = H5Gopen(varsGroup, phaseSpaceVars[0].c_str(), H5P_DEFAULT);
           std::vector<int> phaseElemOrder;
@@ -1003,10 +1118,11 @@ int vtkWARPMPhaseSpaceReader::RequestData(
           {
             for (int ex = 0; ex < velNx; ++ex)
             {
-              double elemVxMin = velXOffset + velXScale * ex;
-              double elemVxMax = velXOffset + velXScale * (ex + 1);
-              double elemVyMin = velYOffset + velYScale * ey;
-              double elemVyMax = velYOffset + velYScale * (ey + 1);
+              // Cell bounds from pre-computed vertex positions
+              double elemVxMin = velVertexX[ex];
+              double elemVxMax = velVertexX[ex + 1];
+              double elemVyMin = velVertexY[ey];
+              double elemVyMax = velVertexY[ey + 1];
 
               int elemStartIdx = (ey * velNx + ex) * velNodesPerElement;
 
@@ -1046,6 +1162,81 @@ int vtkWARPMPhaseSpaceReader::RequestData(
 
           phaseOutput->SetPoints(velPoints);
           phaseOutput->SetCells(VTK_LAGRANGE_QUADRILATERAL, velCells);
+
+          // ============================================================
+          // PORT 2: Probe location (single point in physical space)
+          // ============================================================
+          vtkInformation* probeOutInfo = outputVector->GetInformationObject(2);
+          vtkPolyData* probeOutput = vtkPolyData::SafeDownCast(
+            probeOutInfo->Get(vtkDataObject::DATA_OBJECT()));
+
+          if (probeOutput && physDimIndices.size() >= 2)
+          {
+            // Compute physical vertex positions
+            std::vector<double> physVertexX = PSComputeVertexPositions(
+              phaseCoordExprs[physDimIndices[0]],
+              phaseStartIndices[physDimIndices[0]],
+              phaseNumCells[physDimIndices[0]]);
+            std::vector<double> physVertexY = PSComputeVertexPositions(
+              phaseCoordExprs[physDimIndices[1]],
+              phaseStartIndices[physDimIndices[1]],
+              phaseNumCells[physDimIndices[1]]);
+
+            // Get physical element orders (reopen the variable to read element order)
+            hid_t probePhaseVar = H5Gopen(varsGroup, phaseSpaceVars[0].c_str(), H5P_DEFAULT);
+            std::vector<int> probeElemOrder;
+            PSReadIntArrayAttribute(probePhaseVar, "ElementOrder", probeElemOrder);
+            H5Gclose(probePhaseVar);
+
+            int physOrderX = probeElemOrder.size() > static_cast<size_t>(physDimIndices[0])
+                             ? probeElemOrder[physDimIndices[0]] : 2;
+            int physOrderY = probeElemOrder.size() > static_cast<size_t>(physDimIndices[1])
+                             ? probeElemOrder[physDimIndices[1]] : 2;
+            int physNodesX = physOrderX + 1;
+            int physNodesY = physOrderY + 1;
+
+            // Get GLL nodes for physical dimensions
+            auto gllPhysX = PSGetGLLNodes(physOrderX);
+            auto gllPhysY = PSGetGLLNodes(physOrderY);
+
+            // Get slice indices with bounds checking
+            int sliceX = this->PhysicalSliceIndices[0];
+            int sliceY = this->PhysicalSliceIndices[1];
+            int maxSliceX = phaseNumCells[physDimIndices[0]] - 1;
+            int maxSliceY = phaseNumCells[physDimIndices[1]] - 1;
+            sliceX = std::max(0, std::min(sliceX, maxSliceX));
+            sliceY = std::max(0, std::min(sliceY, maxSliceY));
+
+            // Cell bounds from pre-computed vertex positions
+            double cellXMin = physVertexX[sliceX];
+            double cellXMax = physVertexX[sliceX + 1];
+            double cellYMin = physVertexY[sliceY];
+            double cellYMax = physVertexY[sliceY + 1];
+
+            // Node position within cell (row-major: nodeX * nodesY + nodeY)
+            int physNodeIdx = this->PhysicalNodeIndex;
+            int maxNodeIdx = physNodesX * physNodesY - 1;
+            physNodeIdx = std::max(0, std::min(physNodeIdx, maxNodeIdx));
+
+            int nodeX = physNodeIdx / physNodesY;
+            int nodeY = physNodeIdx % physNodesY;
+
+            double xi = gllPhysX[nodeX];
+            double eta = gllPhysY[nodeY];
+            double probeX = cellXMin + (xi + 1.0) * 0.5 * (cellXMax - cellXMin);
+            double probeY = cellYMin + (eta + 1.0) * 0.5 * (cellYMax - cellYMin);
+
+            // Create probe point
+            vtkNew<vtkPoints> probePoints;
+            probePoints->InsertNextPoint(probeX, probeY, 0.0);
+
+            vtkNew<vtkCellArray> probeVerts;
+            vtkIdType ptId = 0;
+            probeVerts->InsertNextCell(1, &ptId);
+
+            probeOutput->SetPoints(probePoints);
+            probeOutput->SetVerts(probeVerts);
+          }
 
           // Load phase space variable data with slicing
           for (const auto& varName : phaseSpaceVars)

@@ -25,12 +25,14 @@
 
 #include "vtk_hdf5.h"
 
+// For VTK's embedded Python interpreter (string-based communication only)
+#include <vtkPythonInterpreter.h>
+
 #include <fstream>
 #include <sstream>
 #include <algorithm>
 #include <filesystem>
 #include <cmath>
-#include <regex>
 
 vtkStandardNewMacro(vtkWARPMReader);
 
@@ -184,19 +186,112 @@ static bool IsVariableOnPhysicalDomain(hid_t file, hid_t varGroup)
   return isPhysical;
 }
 
-// Parse coordinate expression like "x=-6.28... + 2.513...*k;"
-// Returns offset and scale such that coord = offset + scale * k
-static bool ParseCoordinateExpression(const std::string& expr, double& offset, double& scale)
+//----------------------------------------------------------------------------
+// Python-based coordinate expression evaluator (vectorized with numpy)
+//
+// WARPM VertexCoordinateExpressions are functions x(k) where k is the vertex
+// index. These can be arbitrary C-like math expressions evaluated by WARPM's
+// HIP language, including polynomials and math functions.
+//
+// The vertex index k ranges from startIndex to startIndex + numCells (inclusive).
+// startIndex is NOT always 0 - it can be negative (e.g., velocity dimensions
+// often use symmetric ranges like -3 to +3).
+//
+// Examples:
+//   "x=-0.000542 + 0.001115*k;"                    (linear)
+//   "x=-0.000542 + 0.001115*k - 0.0001*k*k;"       (quadratic)
+//   "x= k*(0.0148*k*k + 0.2);"                     (cubic, factored)
+//   "x=sin(k * 0.1) * 2.0;"                        (trigonometric)
+//
+// We use numpy for vectorized evaluation - single Python call for all vertices.
+//----------------------------------------------------------------------------
+
+// Compute all vertex positions for a dimension by evaluating the coordinate
+// expression using numpy vectorization. Returns positions for vertices at
+// k = startIndex, startIndex+1, ..., startIndex+numCells (numCells+1 values).
+//
+// Uses string-based communication with Python to avoid linking against Python directly.
+// The result is passed back as a comma-separated string in a global variable.
+static std::vector<double> ComputeVertexPositions(
+  const std::string& expr, int startIndex, int numCells)
 {
-  // Pattern: x=<offset> + <scale>*k;
-  std::regex pattern(R"(x\s*=\s*([+-]?\d+\.?\d*(?:[eE][+-]?\d+)?)\s*\+\s*([+-]?\d+\.?\d*(?:[eE][+-]?\d+)?)\s*\*\s*k)");
-  std::smatch match;
-  if (std::regex_search(expr, match, pattern)) {
-    offset = std::stod(match[1].str());
-    scale = std::stod(match[2].str());
-    return true;
+  int numVertices = numCells + 1;
+  std::vector<double> positions(numVertices);
+
+  // Ensure Python is initialized
+  if (!vtkPythonInterpreter::IsInitialized())
+  {
+    vtkPythonInterpreter::Initialize();
   }
-  return false;
+
+  // Extract RHS of expression (after "x=" or similar)
+  std::string rhs = expr;
+  size_t eqPos = expr.find('=');
+  if (eqPos != std::string::npos)
+  {
+    rhs = expr.substr(eqPos + 1);
+  }
+
+  // Remove trailing semicolon and whitespace
+  while (!rhs.empty() && (rhs.back() == ';' || rhs.back() == ' ' || rhs.back() == '\t'))
+  {
+    rhs.pop_back();
+  }
+
+  // Build Python code for vectorized evaluation
+  // Store result as comma-separated string in a global variable
+  std::ostringstream pyCode;
+  pyCode << "import numpy as np\n";
+  pyCode << "from math import *\n";
+  pyCode << "k = np.arange(" << startIndex << ", " << (startIndex + numCells + 1) << ", dtype=np.float64)\n";
+  pyCode << "_warpm_result = " << rhs << "\n";
+  pyCode << "if np.isscalar(_warpm_result):\n";
+  pyCode << "    _warpm_result = np.full(" << numVertices << ", _warpm_result)\n";
+  pyCode << "_warpm_result_str = ','.join(f'{v:.17g}' for v in _warpm_result)\n";
+
+  // Execute the Python code
+  vtkPythonInterpreter::RunSimpleString(pyCode.str().c_str());
+
+  // Retrieve the result string using vtkPythonInterpreter
+  // We need to write it to a file and read it back (no direct API access)
+  // Alternative: use a temporary file or pipe
+  // Simpler approach: use vtkPythonInterpreter to write to a known location
+
+  // Write result to temp file and read it back
+  std::string tempFile = "/tmp/_warpm_vertex_positions.txt";
+  std::ostringstream writeCode;
+  writeCode << "with open('" << tempFile << "', 'w') as f:\n";
+  writeCode << "    f.write(_warpm_result_str)\n";
+  writeCode << "del _warpm_result, _warpm_result_str\n";
+
+  vtkPythonInterpreter::RunSimpleString(writeCode.str().c_str());
+
+  // Read the result from the temp file
+  std::ifstream resultFile(tempFile);
+  if (resultFile.is_open())
+  {
+    std::string resultStr;
+    std::getline(resultFile, resultStr);
+    resultFile.close();
+
+    // Parse comma-separated values
+    std::istringstream iss(resultStr);
+    std::string token;
+    size_t idx = 0;
+    while (std::getline(iss, token, ',') && idx < static_cast<size_t>(numVertices))
+    {
+      try
+      {
+        positions[idx++] = std::stod(token);
+      }
+      catch (...)
+      {
+        // Keep default value of 0.0
+      }
+    }
+  }
+
+  return positions;
 }
 
 // Gauss-Lobatto-Legendre nodes on [-1, 1] for orders 1-8
@@ -979,10 +1074,12 @@ int vtkWARPMReader::RequestData(
 
   int ndims = 0;
   std::vector<int> numCells;
+  std::vector<int> startIndices;
   std::vector<std::string> coordExprs;
 
   ReadIntAttribute(domain, "ndims", ndims);
   ReadIntArrayAttribute(domain, "numCells", numCells);
+  ReadIntArrayAttribute(domain, "startIndices", startIndices);
   ReadStringArrayAttribute(domain, "VertexCoordinateExpressions", coordExprs);
 
   H5Gclose(domain);
@@ -995,10 +1092,16 @@ int vtkWARPMReader::RequestData(
     return 0;
   }
 
-  // Parse coordinate expressions to get domain bounds
-  double xOffset = 0, xScale = 1, yOffset = 0, yScale = 1;
-  ParseCoordinateExpression(coordExprs[0], xOffset, xScale);
-  ParseCoordinateExpression(coordExprs[1], yOffset, yScale);
+  // Default startIndices to 0 if not present
+  if (startIndices.size() < 2)
+  {
+    startIndices.resize(ndims, 0);
+  }
+
+  // Evaluate coordinate expressions to get vertex positions
+  // vertexX[i] is the x-coordinate of vertex i (where i is relative to cell index)
+  std::vector<double> vertexX = ComputeVertexPositions(coordExprs[0], startIndices[0], numCells[0]);
+  std::vector<double> vertexY = ComputeVertexPositions(coordExprs[1], startIndices[1], numCells[1]);
 
   // Read metadata from first enabled variable (for geometry)
   hid_t firstVarGroup = H5Gopen(varsGroup, enabledVars[0].c_str(), H5P_DEFAULT);
@@ -1046,15 +1149,16 @@ int vtkWARPMReader::RequestData(
     int totalNodes = dataNx * dataNy * nodesPerElement;
     this->CachedPoints->SetNumberOfPoints(totalNodes);
 
-    // Fill point coordinates
+    // Fill point coordinates using evaluated vertex positions
     for (int ey = 0; ey < dataNy; ++ey)
     {
       for (int ex = 0; ex < dataNx; ++ex)
       {
-        double elemXMin = xOffset + xScale * ex;
-        double elemXMax = xOffset + xScale * (ex + 1);
-        double elemYMin = yOffset + yScale * ey;
-        double elemYMax = yOffset + yScale * (ey + 1);
+        // Cell bounds from pre-computed vertex positions
+        double elemXMin = vertexX[ex];
+        double elemXMax = vertexX[ex + 1];
+        double elemYMin = vertexY[ey];
+        double elemYMax = vertexY[ey + 1];
 
         int elemStartIdx = (ey * dataNx + ex) * nodesPerElement;
 
