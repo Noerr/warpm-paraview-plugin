@@ -1,31 +1,12 @@
 <ServerManagerConfiguration>
-  <ProxyGroup name="sources">
-    <!-- Base WARPM Reader: Physical space data only, single output port -->
-    <SourceProxy name="WARPMReader"
-                 class="vtkWARPMReader"
-                 label="WARPM Reader">
-      <Documentation long_help="Reads WARPM HDF5 simulation output with high-order DG elements."
-                     short_help="Read WARPM data.">
-        Reads WARPM simulation output from HDF5 files. Supports:
-        - Direct .h5 file loading
-        - .warpm metadata files for time series (with glob patterns)
-        - High-order discontinuous Galerkin elements (VTK Lagrange cells)
-
-        For time series, use .warpm metadata files or select multiple .h5 files.
-        Physical time values are read from each file's /timeData/time attribute.
-
-        For phase space (Vlasov-Maxwell) data, use the WARPM Phase Space Reader instead.
-      </Documentation>
-
+  <!-- Internal readers (not directly exposed to users) -->
+  <ProxyGroup name="internal_sources">
+    <!-- Core WARPM Reader: Used internally by file series wrapper -->
+    <Proxy class="vtkWARPMReader" name="WARPMReaderCore">
       <StringVectorProperty name="FileName"
-                            animateable="0"
                             command="SetFileName"
-                            number_of_elements="1"
-                            panel_visibility="default">
+                            number_of_elements="1">
         <FileListDomain name="files"/>
-        <Documentation>
-          Path to WARPM HDF5 file (.h5) or metadata file (.warpm)
-        </Documentation>
       </StringVectorProperty>
 
       <DoubleVectorProperty information_only="1"
@@ -34,7 +15,6 @@
         <TimeStepsInformationHelper />
       </DoubleVectorProperty>
 
-      <!-- Variable (Point Array) Selection -->
       <StringVectorProperty name="PointArrayInfo"
                             information_only="1">
         <ArraySelectionInformationHelper attribute_name="Point" />
@@ -53,10 +33,65 @@
             <Property name="PointArrayInfo" function="ArrayList" />
           </RequiredProperties>
         </ArraySelectionDomain>
+      </StringVectorProperty>
+    </Proxy>
+
+  </ProxyGroup>
+
+  <!-- Public reader proxies with file series support -->
+  <ProxyGroup name="sources">
+    <!-- WARPM Reader with file series support -->
+    <SourceProxy name="WARPMReader"
+                 class="vtkFileSeriesReader"
+                 si_class="vtkSIMetaReaderProxy"
+                 file_name_method="SetFileName"
+                 label="WARPM Reader">
+      <Documentation long_help="Reads WARPM HDF5 simulation output with high-order DG elements."
+                     short_help="Read WARPM data.">
+        Reads WARPM simulation output from HDF5 files. Supports:
+        - Direct .h5 file loading (single file or multi-select for time series)
+        - .warpm metadata files for time series (with glob patterns)
+        - High-order discontinuous Galerkin elements (VTK Lagrange cells)
+
+        For phase space (Vlasov-Maxwell) data, use the WARPM Phase Space Reader instead.
+      </Documentation>
+
+      <StringVectorProperty name="FileNameInfo"
+                            command="GetCurrentFileName"
+                            information_only="1">
+        <SimpleStringInformationHelper />
+      </StringVectorProperty>
+
+      <StringVectorProperty name="FileName"
+                            animateable="0"
+                            clean_command="RemoveAllFileNames"
+                            command="AddFileName"
+                            information_property="FileNameInfo"
+                            number_of_elements="1"
+                            panel_visibility="never"
+                            repeat_command="1">
+        <FileListDomain name="files"/>
         <Documentation>
-          Select which variables to load from the HDF5 files.
+          Path to WARPM HDF5 file(s) (.h5) or metadata file (.warpm).
+          Select multiple .h5 files for time series.
         </Documentation>
       </StringVectorProperty>
+
+      <DoubleVectorProperty information_only="1"
+                            name="TimestepValues"
+                            repeatable="1">
+        <TimeStepsInformationHelper />
+      </DoubleVectorProperty>
+
+      <SubProxy>
+        <Proxy name="Reader"
+               proxygroup="internal_sources"
+               proxyname="WARPMReaderCore" />
+        <ExposedProperties>
+          <Property name="PointArrayInfo" />
+          <Property name="PointArrayStatus" />
+        </ExposedProperties>
+      </SubProxy>
 
       <Hints>
         <ReaderFactory extensions="warpm h5"
@@ -64,7 +99,9 @@
       </Hints>
     </SourceProxy>
 
-    <!-- Phase Space WARPM Reader: For Vlasov-Maxwell data, two output ports -->
+    <!-- WARPM Phase Space Reader (direct, no file series wrapper)
+         Multi-output-port readers are not compatible with vtkFileSeriesReader.
+         Use .warpm metadata files for time series with phase space data. -->
     <SourceProxy name="WARPMPhaseSpaceReader"
                  class="vtkWARPMPhaseSpaceReader"
                  label="WARPM Phase Space Reader">
@@ -77,22 +114,21 @@
         Output ports:
         - Port 0 (Physical Space): Physical space mesh with physical-space variables
         - Port 1 (Velocity Space): Velocity space mesh at user-specified physical location
-
-        Use the slice controls to select which physical location's velocity
-        distribution to visualize.
+        - Port 2 (Slice Position): Single point showing slice location in physical space
 
         Note: This reader only accepts files containing phase space variables.
         For physical-only data, use the standard WARPM Reader.
+        For time series, use .warpm metadata files (multi-file selection not supported
+        for multi-output readers).
       </Documentation>
 
       <StringVectorProperty name="FileName"
-                            animateable="0"
                             command="SetFileName"
-                            number_of_elements="1"
-                            panel_visibility="default">
+                            number_of_elements="1">
         <FileListDomain name="files"/>
         <Documentation>
-          Path to WARPM HDF5 file (.h5) or metadata file (.warpm)
+          Path to WARPM HDF5 file (.h5) or metadata file (.warpm).
+          For time series, use a .warpm file with glob pattern.
         </Documentation>
       </StringVectorProperty>
 
@@ -102,7 +138,6 @@
         <TimeStepsInformationHelper />
       </DoubleVectorProperty>
 
-      <!-- Variable (Point Array) Selection -->
       <StringVectorProperty name="PointArrayInfo"
                             information_only="1">
         <ArraySelectionInformationHelper attribute_name="Point" />
@@ -121,37 +156,20 @@
             <Property name="PointArrayInfo" function="ArrayList" />
           </RequiredProperties>
         </ArraySelectionDomain>
-        <Documentation>
-          Select which variables to load from the HDF5 files.
-        </Documentation>
       </StringVectorProperty>
 
-      <!-- Phase space slice properties (affect Velocity Space output only) -->
       <IntVectorProperty name="PhysicalSliceIndices"
                          command="SetPhysicalSliceIndices"
                          number_of_elements="3"
-                         default_values="0 0 0"
-                         label="Physical Slice Indices">
+                         default_values="0 0 0">
         <IntRangeDomain name="range" min="0" />
-        <Documentation>
-          Cell indices in physical dimensions (x, y, z) for slicing phase space data.
-          Specifies which cell in the physical mesh to extract velocity data from.
-          Only affects the Velocity Space output (Port 1).
-          For 1D or 2D physical data, only the relevant indices are used.
-        </Documentation>
       </IntVectorProperty>
 
       <IntVectorProperty name="PhysicalNodeIndex"
                          command="SetPhysicalNodeIndex"
                          number_of_elements="1"
-                         default_values="0"
-                         label="Physical Node Index">
+                         default_values="0">
         <IntRangeDomain name="range" min="0" />
-        <Documentation>
-          Node index within the physical cell (0 to nodes_per_physical_cell-1).
-          Selects which GLL node in the physical slice to use for phase space data.
-          Only affects the Velocity Space output (Port 1).
-        </Documentation>
       </IntVectorProperty>
 
       <PropertyGroup label="Velocity Space Location" panel_visibility="default">
