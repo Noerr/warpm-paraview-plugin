@@ -19,7 +19,6 @@
 #include "vtkWARPMReader.h"
 
 #include <string>
-#include <vector>
 
 class WARPMREADERCORE_EXPORT vtkWARPMPhaseSpaceReader : public vtkWARPMReader
 {

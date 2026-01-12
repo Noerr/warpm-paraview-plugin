@@ -179,6 +179,22 @@ protected:
   static std::vector<double> ComputeVertexPositions(const std::string& expression,
                                                     int startIndex, int numCells);
   static std::vector<double> GetGLLNodes(int order);
+  /**
+   * Build Lagrange mesh points and cells from vertex positions and element orders.
+   * This is the core mesh building routine shared between base and derived readers.
+   * @param vertices Vertex positions for each dimension (outer vector is dimension)
+   * @param orders Element polynomial order for each dimension
+   * @param numCells Number of cells in each dimension
+   * @param points Output VTK points (must be pre-allocated)
+   * @param cells Output VTK cell array (must be pre-allocated)
+   * @param warpmToVTK Output WARPM-to-VTK node index mapping
+   */
+  static void BuildLagrangeMesh(const std::vector<std::vector<double>>& vertices,
+                                const std::vector<int>& orders,
+                                const std::vector<int>& numCells,
+                                vtkPoints* points,
+                                vtkCellArray* cells,
+                                std::vector<int>& warpmToVTK);
   ///@}
 
   ///@{

@@ -368,6 +368,104 @@ std::vector<double> vtkWARPMReader::GetGLLNodes(int order)
   return nodes;
 }
 
+//----------------------------------------------------------------------------
+// Shared mesh building helper
+//----------------------------------------------------------------------------
+void vtkWARPMReader::BuildLagrangeMesh(
+  const std::vector<std::vector<double>>& vertices,
+  const std::vector<int>& orders,
+  const std::vector<int>& numCells,
+  vtkPoints* points,
+  vtkCellArray* cells,
+  std::vector<int>& warpmToVTK)
+{
+  int ndims = static_cast<int>(orders.size());
+  if (ndims < 1 || ndims > 3)
+  {
+    return;
+  }
+
+  // Compute nodes per element
+  int nodesPerElement = ComputeTotalNodes(orders);
+
+  // Compute total cells
+  int totalCells = 1;
+  for (int nc : numCells)
+  {
+    totalCells *= nc;
+  }
+
+  int totalNodes = totalCells * nodesPerElement;
+
+  // Get GLL nodes for each dimension
+  std::vector<std::vector<double>> gll(ndims);
+  for (int d = 0; d < ndims; ++d)
+  {
+    gll[d] = GetGLLNodes(orders[d]);
+  }
+
+  // Build WARPM-to-VTK node mapping
+  warpmToVTK = BuildWarpmToVTKMapping(orders);
+
+  // Compute nodes per dimension for index decomposition
+  std::vector<int> nodesPerDim(ndims);
+  for (int d = 0; d < ndims; ++d)
+  {
+    nodesPerDim[d] = orders[d] + 1;
+  }
+
+  // Set up points
+  points->SetNumberOfPoints(totalNodes);
+
+  // Iterate over all cells
+  for (int cellIdx = 0; cellIdx < totalCells; ++cellIdx)
+  {
+    // Decompose cell index into per-dimension indices
+    std::vector<int> cellIndices = DecomposeIndex(cellIdx, numCells);
+
+    // Get cell bounds from vertex positions
+    std::vector<double> cellMin(ndims), cellMax(ndims);
+    for (int d = 0; d < ndims; ++d)
+    {
+      cellMin[d] = vertices[d][cellIndices[d]];
+      cellMax[d] = vertices[d][cellIndices[d] + 1];
+    }
+
+    int elemStartIdx = cellIdx * nodesPerElement;
+
+    // Iterate over nodes within this cell
+    for (int nodeIdx = 0; nodeIdx < nodesPerElement; ++nodeIdx)
+    {
+      // Decompose node index into per-dimension node indices
+      std::vector<int> nodeIndices = DecomposeIndex(nodeIdx, nodesPerDim);
+
+      // Compute physical position (VTK uses 3D points, pad with 0)
+      double pos[3] = {0.0, 0.0, 0.0};
+      for (int d = 0; d < ndims; ++d)
+      {
+        double xi = gll[d][nodeIndices[d]];
+        pos[d] = cellMin[d] + (xi + 1.0) * 0.5 * (cellMax[d] - cellMin[d]);
+      }
+
+      int vtkLocalIdx = warpmToVTK[nodeIdx];
+      int vtkPointIdx = elemStartIdx + vtkLocalIdx;
+      points->SetPoint(vtkPointIdx, pos[0], pos[1], pos[2]);
+    }
+  }
+
+  // Create cells
+  for (int cellIdx = 0; cellIdx < totalCells; ++cellIdx)
+  {
+    int elemStartIdx = cellIdx * nodesPerElement;
+    std::vector<vtkIdType> cellPts(nodesPerElement);
+    for (int i = 0; i < nodesPerElement; ++i)
+    {
+      cellPts[i] = elemStartIdx + i;
+    }
+    cells->InsertNextCell(nodesPerElement, cellPts.data());
+  }
+}
+
 // Build mapping from WARPM row-major node index to VTK Lagrange node index
 // WARPM: row-major tensor product (y varies fastest, then x)
 //   linear index = x * nodesY + y
@@ -1362,71 +1460,11 @@ int vtkWARPMReader::RequestData(
 
   if (!canUseCache)
   {
-    // Build geometry from scratch
-
-    // Get GLL nodes for each dimension
-    std::vector<std::vector<double>> gll(ndims);
-    for (int d = 0; d < ndims; ++d)
-    {
-      gll[d] = GetGLLNodes(orders[d]);
-    }
-
-    // Build WARPM-to-VTK node mapping
-    this->CachedWarpmToVTK = BuildWarpmToVTKMapping(orders);
-
-    // Create points
+    // Build geometry using shared helper
     this->CachedPoints = vtkSmartPointer<vtkPoints>::New();
-    int totalNodes = totalCells * nodesPerElement;
-    this->CachedPoints->SetNumberOfPoints(totalNodes);
-
-    // Iterate over all cells
-    for (int cellIdx = 0; cellIdx < totalCells; ++cellIdx)
-    {
-      // Decompose cell index into per-dimension indices
-      std::vector<int> cellIndices = DecomposeIndex(cellIdx, dataDims);
-
-      // Get cell bounds from vertex positions
-      std::vector<double> cellMin(ndims), cellMax(ndims);
-      for (int d = 0; d < ndims; ++d)
-      {
-        cellMin[d] = vertices[d][cellIndices[d]];
-        cellMax[d] = vertices[d][cellIndices[d] + 1];
-      }
-
-      int elemStartIdx = cellIdx * nodesPerElement;
-
-      // Iterate over nodes within this cell
-      for (int nodeIdx = 0; nodeIdx < nodesPerElement; ++nodeIdx)
-      {
-        // Decompose node index into per-dimension node indices
-        std::vector<int> nodeIndices = DecomposeIndex(nodeIdx, nodesPerDim);
-
-        // Compute physical position (VTK uses 3D points, pad with 0)
-        double pos[3] = {0.0, 0.0, 0.0};
-        for (int d = 0; d < ndims; ++d)
-        {
-          double xi = gll[d][nodeIndices[d]];
-          pos[d] = cellMin[d] + (xi + 1.0) * 0.5 * (cellMax[d] - cellMin[d]);
-        }
-
-        int vtkLocalIdx = this->CachedWarpmToVTK[nodeIdx];
-        int vtkPointIdx = elemStartIdx + vtkLocalIdx;
-        this->CachedPoints->SetPoint(vtkPointIdx, pos[0], pos[1], pos[2]);
-      }
-    }
-
-    // Create cells
     this->CachedCells = vtkSmartPointer<vtkCellArray>::New();
-    for (int cellIdx = 0; cellIdx < totalCells; ++cellIdx)
-    {
-      int elemStartIdx = cellIdx * nodesPerElement;
-      std::vector<vtkIdType> cellPts(nodesPerElement);
-      for (int i = 0; i < nodesPerElement; ++i)
-      {
-        cellPts[i] = elemStartIdx + i;
-      }
-      this->CachedCells->InsertNextCell(nodesPerElement, cellPts.data());
-    }
+    BuildLagrangeMesh(vertices, orders, dataDims, this->CachedPoints, this->CachedCells,
+                      this->CachedWarpmToVTK);
 
     // Cache metadata
     this->CachedNdims = ndims;
