@@ -381,39 +381,40 @@ The plugin includes `BuildWarpmToVTKLagrangeMapping()` to convert between orderi
 - Warning when variables span multiple domains (only first domain loaded)
 - Python-based coordinate expression evaluation (handles polynomial and math expressions)
 
-**Current limitation:** The phase space reader currently assumes 2D physical space + 2D velocity space (4D total). The code has hardcoded assumptions about 2 physical dimensions and 2 velocity dimensions in several places:
-- `PhysicalSliceIndices` is a 2-element array
-- Mesh building loops assume 2D (nested x/y loops)
-- VTK cell types are 2D (VTK_LAGRANGE_QUADRILATERAL)
-
-### Phase 8: Arbitrary Dimension Support [PLANNED]
-Generalize from 2D+2D to support all valid combinations:
+### Phase 8: Arbitrary Dimension Support [COMPLETE ✓]
+Both readers now support arbitrary dimension combinations:
 - Physical dimensions: 1D, 2D, or 3D
 - Velocity dimensions: 1D, 2D, or 3D
 - Phase space total: 2D to 6D
 
-This requires:
-- Dynamic `PhysicalSliceIndices` size based on detected physical dimensions
-- Generalized mesh building for 1D/2D/3D (lines, quads, hexes)
-- Appropriate VTK cell types: `VTK_LAGRANGE_CURVE`, `VTK_LAGRANGE_QUADRILATERAL`, `VTK_LAGRANGE_HEXAHEDRON`
-- Generalized node ordering mappings for each dimension count
+Implementation includes:
+- N-dimensional helper functions for index decomposition and flat index computation
+- `PhysicalSliceIndices` expanded to 3 elements with validation for unused dimensions
+- Generalized mesh building using iterative N-dimensional loops
+- VTK cell types: `VTK_LAGRANGE_CURVE` (1D), `VTK_LAGRANGE_QUADRILATERAL` (2D), `VTK_LAGRANGE_HEXAHEDRON` (3D)
+- Node ordering mappings for 1D, 2D, and 3D Lagrange elements
 - Dynamic hyperslab selection based on actual dimension counts
+
+Tested configurations: 1D+2V, 2D+2V, 2D+3V phase space files, plus 1D and 2D physical-only files
 
 ## Test Data
 
 ```
 /Users/noah/Downloads/test_macos_warpm/
-├── maxwell_2d.warpm          # Metadata file for physical-space data
-├── maxwell_2d_0000.h5        # Physical-space frame files
+├── maxwell_2d.warpm                    # Metadata file for 2D physical-space data
+├── maxwell_2d_0000.h5                  # 2D physical-space frame files
 ├── maxwell_2d_0001.h5
 ├── ...
 ├── maxwell_2d_0010.h5
-└── phase_space_vars_0000.h5  # Phase space test file (2D-2V Vlasov-Maxwell)
+├── Crews_Sheared_Bennett_1d2v_0000.h5  # 1D physical-only test file
+├── phase_space_vars_1d2v_0000.h5       # 1D+2V phase space (1D physical, 2D velocity)
+├── phase_space_vars_2d2v_0000.h5       # 2D+2V phase space (2D physical, 2D velocity)
+└── phase_space_vars_2d3v_0000.h5       # 2D+3V phase space (2D physical, 3D velocity)
 ```
 
-The phase space test file contains:
-- `EM_field_n`: Physical-space electromagnetic field data
-- `pdf_n`: Phase space distribution function (proton PDF)
+Phase space test files contain:
+- `EM_field_n`: Physical-space electromagnetic field data (on physical domain)
+- `pdf_n`: Phase space distribution function (on phase space domain)
 
 ## Reference Files
 
@@ -565,10 +566,3 @@ print('Cells:', output.GetNumberOfCells())
 - Use Kitware's `kitware/paraview_org-plugin-devel` Docker image
 - Build binary-compatible plugins for official Linux ParaView releases
 - CI/CD pipeline for automated plugin builds
-
-### Arbitrary Phase Space Dimensions
-The current implementation assumes 2D physical + 2D velocity (4D phase space). Generalization needed:
-- Support 1D, 2D, or 3D physical space
-- Support 1D, 2D, or 3D velocity space
-- Total phase space dimensions: 2 to 6
-- See "Phase 8" in Implementation Phases for details
