@@ -398,6 +398,170 @@ static std::vector<int> BuildWarpmToVTKLagrangeMapping(int orderX, int orderY)
 }
 
 //----------------------------------------------------------------------------
+// N-Dimensional Helper Functions for Arbitrary Dimension Support
+//----------------------------------------------------------------------------
+
+// Build mapping from WARPM to VTK Lagrange for 1D elements (curves)
+static std::vector<int> BuildWarpmToVTKLagrangeMapping1D(int order)
+{
+  int numNodes = order + 1;
+  std::vector<int> mapping(numNodes, -1);
+  int vtkIdx = 0;
+
+  // VTK Lagrange curve: endpoints first, then interior
+  mapping[0] = vtkIdx++;           // Left endpoint
+  mapping[order] = vtkIdx++;       // Right endpoint
+
+  // Interior nodes (if any)
+  for (int i = 1; i < order; ++i)
+  {
+    mapping[i] = vtkIdx++;
+  }
+
+  return mapping;
+}
+
+// Build mapping from WARPM to VTK Lagrange for 3D elements (hexahedra)
+static std::vector<int> BuildWarpmToVTKLagrangeMapping3D(int orderX, int orderY, int orderZ)
+{
+  int nodesX = orderX + 1;
+  int nodesY = orderY + 1;
+  int nodesZ = orderZ + 1;
+  int totalNodes = nodesX * nodesY * nodesZ;
+
+  std::vector<int> mapping(totalNodes, -1);
+  int vtkIdx = 0;
+
+  // Lambda: WARPM row-major index (z varies fastest, then y, then x)
+  auto warpmIdx = [nodesY, nodesZ](int x, int y, int z) {
+    return x * nodesY * nodesZ + y * nodesZ + z;
+  };
+
+  // 1. Eight corners (VTK ordering)
+  mapping[warpmIdx(0, 0, 0)] = vtkIdx++;             // 0
+  mapping[warpmIdx(orderX, 0, 0)] = vtkIdx++;       // 1
+  mapping[warpmIdx(orderX, orderY, 0)] = vtkIdx++; // 2
+  mapping[warpmIdx(0, orderY, 0)] = vtkIdx++;       // 3
+  mapping[warpmIdx(0, 0, orderZ)] = vtkIdx++;       // 4
+  mapping[warpmIdx(orderX, 0, orderZ)] = vtkIdx++; // 5
+  mapping[warpmIdx(orderX, orderY, orderZ)] = vtkIdx++; // 6
+  mapping[warpmIdx(0, orderY, orderZ)] = vtkIdx++; // 7
+
+  // 2. Twelve edges (interior points only)
+  // Bottom face edges (z=0)
+  for (int i = 1; i < orderX; ++i) mapping[warpmIdx(i, 0, 0)] = vtkIdx++;           // Edge 0: 0->1
+  for (int i = 1; i < orderY; ++i) mapping[warpmIdx(orderX, i, 0)] = vtkIdx++;     // Edge 1: 1->2
+  for (int i = 1; i < orderX; ++i) mapping[warpmIdx(i, orderY, 0)] = vtkIdx++;     // Edge 2: 3->2
+  for (int i = 1; i < orderY; ++i) mapping[warpmIdx(0, i, 0)] = vtkIdx++;           // Edge 3: 0->3
+  // Top face edges (z=orderZ)
+  for (int i = 1; i < orderX; ++i) mapping[warpmIdx(i, 0, orderZ)] = vtkIdx++;     // Edge 4: 4->5
+  for (int i = 1; i < orderY; ++i) mapping[warpmIdx(orderX, i, orderZ)] = vtkIdx++; // Edge 5: 5->6
+  for (int i = 1; i < orderX; ++i) mapping[warpmIdx(i, orderY, orderZ)] = vtkIdx++; // Edge 6: 7->6
+  for (int i = 1; i < orderY; ++i) mapping[warpmIdx(0, i, orderZ)] = vtkIdx++;     // Edge 7: 4->7
+  // Vertical edges
+  for (int i = 1; i < orderZ; ++i) mapping[warpmIdx(0, 0, i)] = vtkIdx++;           // Edge 8: 0->4
+  for (int i = 1; i < orderZ; ++i) mapping[warpmIdx(orderX, 0, i)] = vtkIdx++;     // Edge 9: 1->5
+  for (int i = 1; i < orderZ; ++i) mapping[warpmIdx(orderX, orderY, i)] = vtkIdx++; // Edge 10: 2->6
+  for (int i = 1; i < orderZ; ++i) mapping[warpmIdx(0, orderY, i)] = vtkIdx++;     // Edge 11: 3->7
+
+  // 3. Six faces (interior nodes only)
+  // Face 0: z=0 (bottom)
+  for (int j = 1; j < orderY; ++j)
+    for (int i = 1; i < orderX; ++i)
+      mapping[warpmIdx(i, j, 0)] = vtkIdx++;
+  // Face 1: z=orderZ (top)
+  for (int j = 1; j < orderY; ++j)
+    for (int i = 1; i < orderX; ++i)
+      mapping[warpmIdx(i, j, orderZ)] = vtkIdx++;
+  // Face 2: y=0 (front)
+  for (int k = 1; k < orderZ; ++k)
+    for (int i = 1; i < orderX; ++i)
+      mapping[warpmIdx(i, 0, k)] = vtkIdx++;
+  // Face 3: y=orderY (back)
+  for (int k = 1; k < orderZ; ++k)
+    for (int i = 1; i < orderX; ++i)
+      mapping[warpmIdx(i, orderY, k)] = vtkIdx++;
+  // Face 4: x=0 (left)
+  for (int k = 1; k < orderZ; ++k)
+    for (int j = 1; j < orderY; ++j)
+      mapping[warpmIdx(0, j, k)] = vtkIdx++;
+  // Face 5: x=orderX (right)
+  for (int k = 1; k < orderZ; ++k)
+    for (int j = 1; j < orderY; ++j)
+      mapping[warpmIdx(orderX, j, k)] = vtkIdx++;
+
+  // 4. Interior volume nodes
+  for (int k = 1; k < orderZ; ++k)
+    for (int j = 1; j < orderY; ++j)
+      for (int i = 1; i < orderX; ++i)
+        mapping[warpmIdx(i, j, k)] = vtkIdx++;
+
+  return mapping;
+}
+
+// Dispatcher for building WARPM-to-VTK mapping based on dimension count
+static std::vector<int> BuildWarpmToVTKMapping(const std::vector<int>& orders)
+{
+  switch (orders.size())
+  {
+    case 1:
+      return BuildWarpmToVTKLagrangeMapping1D(orders[0]);
+    case 2:
+      return BuildWarpmToVTKLagrangeMapping(orders[0], orders[1]);
+    case 3:
+      return BuildWarpmToVTKLagrangeMapping3D(orders[0], orders[1], orders[2]);
+    default:
+      return std::vector<int>();
+  }
+}
+
+// Get VTK Lagrange cell type for given number of dimensions
+static int GetLagrangeCellType(int ndims)
+{
+  switch (ndims)
+  {
+    case 1: return VTK_LAGRANGE_CURVE;          // Type 68
+    case 2: return VTK_LAGRANGE_QUADRILATERAL;  // Type 70
+    case 3: return VTK_LAGRANGE_HEXAHEDRON;     // Type 72
+    default: return -1;
+  }
+}
+
+// Decompose a flat index into N-dimensional indices (row-major, last dim fastest)
+static std::vector<int> DecomposeIndex(int flatIdx, const std::vector<int>& sizes)
+{
+  std::vector<int> indices(sizes.size());
+  for (int d = static_cast<int>(sizes.size()) - 1; d >= 0; --d)
+  {
+    indices[d] = flatIdx % sizes[d];
+    flatIdx /= sizes[d];
+  }
+  return indices;
+}
+
+// Compute flat index from N-dimensional indices (row-major, last dim fastest)
+static int ComputeFlatIndex(const std::vector<int>& indices, const std::vector<int>& sizes)
+{
+  int flatIdx = 0;
+  for (size_t d = 0; d < indices.size(); ++d)
+  {
+    flatIdx = flatIdx * sizes[d] + indices[d];
+  }
+  return flatIdx;
+}
+
+// Compute total nodes for an N-dimensional element with given orders
+static int ComputeTotalNodes(const std::vector<int>& orders)
+{
+  int total = 1;
+  for (int o : orders)
+  {
+    total *= (o + 1);
+  }
+  return total;
+}
+
+//----------------------------------------------------------------------------
 vtkWARPMReader::vtkWARPMReader()
   : FileName(nullptr)
 {
@@ -1084,24 +1248,29 @@ int vtkWARPMReader::RequestData(
 
   H5Gclose(domain);
 
-  if (ndims < 2 || numCells.size() < 2 || coordExprs.size() < 2)
+  // Validate dimensions (support 1D, 2D, or 3D)
+  if (ndims < 1 || ndims > 3 ||
+      static_cast<int>(numCells.size()) < ndims ||
+      static_cast<int>(coordExprs.size()) < ndims)
   {
-    vtkErrorMacro("Invalid domain dimensions");
+    vtkErrorMacro("Invalid domain dimensions: ndims=" << ndims);
     H5Gclose(varsGroup);
     H5Fclose(file);
     return 0;
   }
 
   // Default startIndices to 0 if not present
-  if (startIndices.size() < 2)
+  if (static_cast<int>(startIndices.size()) < ndims)
   {
     startIndices.resize(ndims, 0);
   }
 
-  // Evaluate coordinate expressions to get vertex positions
-  // vertexX[i] is the x-coordinate of vertex i (where i is relative to cell index)
-  std::vector<double> vertexX = ComputeVertexPositions(coordExprs[0], startIndices[0], numCells[0]);
-  std::vector<double> vertexY = ComputeVertexPositions(coordExprs[1], startIndices[1], numCells[1]);
+  // Evaluate coordinate expressions to get vertex positions for each dimension
+  std::vector<std::vector<double>> vertices(ndims);
+  for (int d = 0; d < ndims; ++d)
+  {
+    vertices[d] = ComputeVertexPositions(coordExprs[d], startIndices[d], numCells[d]);
+  }
 
   // Read metadata from first enabled variable (for geometry)
   hid_t firstVarGroup = H5Gopen(varsGroup, enabledVars[0].c_str(), H5P_DEFAULT);
@@ -1115,100 +1284,136 @@ int vtkWARPMReader::RequestData(
   hid_t firstDataset = H5Dopen(firstVarGroup, "data", H5P_DEFAULT);
   hid_t firstDataspace = H5Dget_space(firstDataset);
   int dataNdims = H5Sget_simple_extent_ndims(firstDataspace);
-  std::vector<hsize_t> dataDims(dataNdims);
-  H5Sget_simple_extent_dims(firstDataspace, dataDims.data(), nullptr);
+  std::vector<hsize_t> dataDimsH5(dataNdims);
+  H5Sget_simple_extent_dims(firstDataspace, dataDimsH5.data(), nullptr);
   H5Sclose(firstDataspace);
   H5Dclose(firstDataset);
   H5Gclose(firstVarGroup);
 
-  int dataNx = static_cast<int>(dataDims[0]);
-  int dataNy = static_cast<int>(dataDims[1]);
-  int nodesPerElement = static_cast<int>(dataDims[2]);
+  // Build data dimensions vector for physical dimensions (exclude nodesPerElement and components)
+  std::vector<int> dataDims(ndims);
+  for (int d = 0; d < ndims; ++d)
+  {
+    dataDims[d] = static_cast<int>(dataDimsH5[d]);
+  }
+  int nodesPerElement = static_cast<int>(dataDimsH5[ndims]);
 
-  // Determine element order from nodes per element
-  int orderX = (elementOrder.size() > 0) ? elementOrder[0] : static_cast<int>(std::sqrt(nodesPerElement)) - 1;
-  int orderY = (elementOrder.size() > 1) ? elementOrder[1] : orderX;
-  int nodesX = orderX + 1;
-  int nodesY = orderY + 1;
+  // Determine element orders for each dimension
+  std::vector<int> orders(ndims);
+  for (int d = 0; d < ndims; ++d)
+  {
+    if (d < static_cast<int>(elementOrder.size()))
+    {
+      orders[d] = elementOrder[d];
+    }
+    else
+    {
+      // Fallback: assume same order in all dimensions
+      int guessOrder = static_cast<int>(std::pow(nodesPerElement, 1.0 / ndims) + 0.5) - 1;
+      orders[d] = guessOrder > 0 ? guessOrder : 1;
+    }
+  }
+
+  // Compute nodes per dimension
+  std::vector<int> nodesPerDim(ndims);
+  for (int d = 0; d < ndims; ++d)
+  {
+    nodesPerDim[d] = orders[d] + 1;
+  }
+
+  // Total number of cells
+  int totalCells = 1;
+  for (int d = 0; d < ndims; ++d)
+  {
+    totalCells *= dataDims[d];
+  }
 
   // Check if we can use cached geometry
   bool canUseCache = this->GeometryCached &&
-                     this->CachedNx == dataNx &&
-                     this->CachedNy == dataNy &&
+                     this->CachedNdims == ndims &&
+                     this->CachedDataDims == dataDims &&
                      this->CachedNodesPerElement == nodesPerElement;
 
   if (!canUseCache)
   {
     // Build geometry from scratch
-    auto gllX = GetGLLNodes(orderX);
-    auto gllY = GetGLLNodes(orderY);
-    this->CachedWarpmToVTK = BuildWarpmToVTKLagrangeMapping(orderX, orderY);
+
+    // Get GLL nodes for each dimension
+    std::vector<std::vector<double>> gll(ndims);
+    for (int d = 0; d < ndims; ++d)
+    {
+      gll[d] = GetGLLNodes(orders[d]);
+    }
+
+    // Build WARPM-to-VTK node mapping
+    this->CachedWarpmToVTK = BuildWarpmToVTKMapping(orders);
 
     // Create points
     this->CachedPoints = vtkSmartPointer<vtkPoints>::New();
-    int totalNodes = dataNx * dataNy * nodesPerElement;
+    int totalNodes = totalCells * nodesPerElement;
     this->CachedPoints->SetNumberOfPoints(totalNodes);
 
-    // Fill point coordinates using evaluated vertex positions
-    for (int ey = 0; ey < dataNy; ++ey)
+    // Iterate over all cells
+    for (int cellIdx = 0; cellIdx < totalCells; ++cellIdx)
     {
-      for (int ex = 0; ex < dataNx; ++ex)
+      // Decompose cell index into per-dimension indices
+      std::vector<int> cellIndices = DecomposeIndex(cellIdx, dataDims);
+
+      // Get cell bounds from vertex positions
+      std::vector<double> cellMin(ndims), cellMax(ndims);
+      for (int d = 0; d < ndims; ++d)
       {
-        // Cell bounds from pre-computed vertex positions
-        double elemXMin = vertexX[ex];
-        double elemXMax = vertexX[ex + 1];
-        double elemYMin = vertexY[ey];
-        double elemYMax = vertexY[ey + 1];
+        cellMin[d] = vertices[d][cellIndices[d]];
+        cellMax[d] = vertices[d][cellIndices[d] + 1];
+      }
 
-        int elemStartIdx = (ey * dataNx + ex) * nodesPerElement;
+      int elemStartIdx = cellIdx * nodesPerElement;
 
-        for (int ix = 0; ix < nodesX; ++ix)
+      // Iterate over nodes within this cell
+      for (int nodeIdx = 0; nodeIdx < nodesPerElement; ++nodeIdx)
+      {
+        // Decompose node index into per-dimension node indices
+        std::vector<int> nodeIndices = DecomposeIndex(nodeIdx, nodesPerDim);
+
+        // Compute physical position (VTK uses 3D points, pad with 0)
+        double pos[3] = {0.0, 0.0, 0.0};
+        for (int d = 0; d < ndims; ++d)
         {
-          for (int iy = 0; iy < nodesY; ++iy)
-          {
-            int warpmLocalIdx = ix * nodesY + iy;
-            int vtkLocalIdx = this->CachedWarpmToVTK[warpmLocalIdx];
-            int vtkPointIdx = elemStartIdx + vtkLocalIdx;
-
-            double xi = gllX[ix];
-            double eta = gllY[iy];
-            double x = elemXMin + (xi + 1.0) * 0.5 * (elemXMax - elemXMin);
-            double y = elemYMin + (eta + 1.0) * 0.5 * (elemYMax - elemYMin);
-
-            this->CachedPoints->SetPoint(vtkPointIdx, x, y, 0.0);
-          }
+          double xi = gll[d][nodeIndices[d]];
+          pos[d] = cellMin[d] + (xi + 1.0) * 0.5 * (cellMax[d] - cellMin[d]);
         }
+
+        int vtkLocalIdx = this->CachedWarpmToVTK[nodeIdx];
+        int vtkPointIdx = elemStartIdx + vtkLocalIdx;
+        this->CachedPoints->SetPoint(vtkPointIdx, pos[0], pos[1], pos[2]);
       }
     }
 
     // Create cells
     this->CachedCells = vtkSmartPointer<vtkCellArray>::New();
-    for (int ey = 0; ey < dataNy; ++ey)
+    for (int cellIdx = 0; cellIdx < totalCells; ++cellIdx)
     {
-      for (int ex = 0; ex < dataNx; ++ex)
+      int elemStartIdx = cellIdx * nodesPerElement;
+      std::vector<vtkIdType> cellPts(nodesPerElement);
+      for (int i = 0; i < nodesPerElement; ++i)
       {
-        int elemStartIdx = (ey * dataNx + ex) * nodesPerElement;
-        std::vector<vtkIdType> cellPts(nodesPerElement);
-        for (int i = 0; i < nodesPerElement; ++i)
-        {
-          cellPts[i] = elemStartIdx + i;
-        }
-        this->CachedCells->InsertNextCell(nodesPerElement, cellPts.data());
+        cellPts[i] = elemStartIdx + i;
       }
+      this->CachedCells->InsertNextCell(nodesPerElement, cellPts.data());
     }
 
     // Cache metadata
-    this->CachedNx = dataNx;
-    this->CachedNy = dataNy;
+    this->CachedNdims = ndims;
+    this->CachedDataDims = dataDims;
     this->CachedNodesPerElement = nodesPerElement;
     this->GeometryCached = true;
   }
 
   // Set cached geometry on output
   output->SetPoints(this->CachedPoints);
-  output->SetCells(VTK_LAGRANGE_QUADRILATERAL, this->CachedCells);
+  output->SetCells(GetLagrangeCellType(ndims), this->CachedCells);
 
-  int totalNodes = dataNx * dataNy * nodesPerElement;
+  int totalNodes = totalCells * nodesPerElement;
 
   // Load data for each enabled variable
   for (const auto& varName : enabledVars)
@@ -1232,9 +1437,10 @@ int vtkWARPMReader::RequestData(
     std::vector<hsize_t> varDims(varNdims);
     H5Sget_simple_extent_dims(dataspace, varDims.data(), nullptr);
 
-    int varNumComponents = static_cast<int>(varDims[3]);
+    // Last dimension is components
+    int varNumComponents = static_cast<int>(varDims[varNdims - 1]);
 
-    std::vector<double> data(dataNx * dataNy * nodesPerElement * varNumComponents);
+    std::vector<double> data(totalCells * nodesPerElement * varNumComponents);
     H5Dread(dataset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data.data());
 
     H5Sclose(dataspace);
@@ -1254,27 +1460,39 @@ int vtkWARPMReader::RequestData(
       fieldArrays.push_back(arr);
     }
 
-    // Fill field data (using cached mapping)
-    for (int ey = 0; ey < dataNy; ++ey)
+    // Fill field data (using cached mapping and N-dimensional iteration)
+    for (int cellIdx = 0; cellIdx < totalCells; ++cellIdx)
     {
-      for (int ex = 0; ex < dataNx; ++ex)
+      // Decompose cell index into per-dimension indices
+      std::vector<int> cellIndices = DecomposeIndex(cellIdx, dataDims);
+
+      // Compute reversed cell indices for WARPM data ordering
+      // WARPM stores data with first dimension varying slowest (row-major)
+      std::vector<int> reversedCellIndices(ndims);
+      for (int d = 0; d < ndims; ++d)
       {
-        int elemStartIdx = (ey * dataNx + ex) * nodesPerElement;
+        reversedCellIndices[d] = cellIndices[ndims - 1 - d];
+      }
+      // Reversed dataDims for computing WARPM flat index
+      std::vector<int> reversedDataDims(ndims);
+      for (int d = 0; d < ndims; ++d)
+      {
+        reversedDataDims[d] = dataDims[ndims - 1 - d];
+      }
+      int warpmCellIdx = ComputeFlatIndex(reversedCellIndices, reversedDataDims);
 
-        for (int ix = 0; ix < nodesX; ++ix)
+      int elemStartIdx = cellIdx * nodesPerElement;
+
+      // Iterate over nodes within this cell
+      for (int nodeIdx = 0; nodeIdx < nodesPerElement; ++nodeIdx)
+      {
+        int vtkLocalIdx = this->CachedWarpmToVTK[nodeIdx];
+        int vtkPointIdx = elemStartIdx + vtkLocalIdx;
+
+        int warpmDataIdx = (warpmCellIdx * nodesPerElement + nodeIdx) * varNumComponents;
+        for (int c = 0; c < varNumComponents; ++c)
         {
-          for (int iy = 0; iy < nodesY; ++iy)
-          {
-            int warpmLocalIdx = ix * nodesY + iy;
-            int vtkLocalIdx = this->CachedWarpmToVTK[warpmLocalIdx];
-            int vtkPointIdx = elemStartIdx + vtkLocalIdx;
-
-            int warpmDataIdx = ((ex * dataNy + ey) * nodesPerElement + warpmLocalIdx) * varNumComponents;
-            for (int c = 0; c < varNumComponents; ++c)
-            {
-              fieldArrays[c]->SetValue(vtkPointIdx, data[warpmDataIdx + c]);
-            }
-          }
+          fieldArrays[c]->SetValue(vtkPointIdx, data[warpmDataIdx + c]);
         }
       }
     }

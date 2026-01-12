@@ -280,6 +280,60 @@ static std::vector<double> PSGetGLLNodes(int order)
   return nodes;
 }
 
+//----------------------------------------------------------------------------
+// N-Dimensional Helper Functions for Arbitrary Dimension Support
+//----------------------------------------------------------------------------
+
+// Decompose a flat index into N-dimensional indices (row-major, last dim fastest)
+// Example: flatIdx=5, sizes={2,3} -> indices={1,2} (5 = 1*3 + 2)
+static std::vector<int> PSDecomposeIndex(int flatIdx, const std::vector<int>& sizes)
+{
+  std::vector<int> indices(sizes.size());
+  for (int d = static_cast<int>(sizes.size()) - 1; d >= 0; --d)
+  {
+    indices[d] = flatIdx % sizes[d];
+    flatIdx /= sizes[d];
+  }
+  return indices;
+}
+
+// Compute flat index from N-dimensional indices (row-major, last dim fastest)
+// Example: indices={1,2}, sizes={2,3} -> flatIdx=5 (1*3 + 2)
+static int PSComputeFlatIndex(const std::vector<int>& indices, const std::vector<int>& sizes)
+{
+  int flatIdx = 0;
+  for (size_t d = 0; d < indices.size(); ++d)
+  {
+    flatIdx = flatIdx * sizes[d] + indices[d];
+  }
+  return flatIdx;
+}
+
+// Compute total nodes for an N-dimensional element with given orders
+// Example: orders={2,3} -> (2+1)*(3+1) = 12 nodes
+static int PSComputeTotalNodes(const std::vector<int>& orders)
+{
+  int total = 1;
+  for (int o : orders)
+  {
+    total *= (o + 1);
+  }
+  return total;
+}
+
+// Get VTK Lagrange cell type for given number of dimensions
+static int PSGetLagrangeCellType(int ndims)
+{
+  switch (ndims)
+  {
+    case 1: return VTK_LAGRANGE_CURVE;          // Type 68
+    case 2: return VTK_LAGRANGE_QUADRILATERAL;  // Type 70
+    case 3: return VTK_LAGRANGE_HEXAHEDRON;     // Type 72
+    default:
+      return -1; // Invalid
+  }
+}
+
 // Detect if a domain is a phase space domain
 static bool PSDetectPhaseSpaceDomain(hid_t domainGroup, int& numPhysical, int& numVelocity,
                                      std::vector<std::string>& coordNames)
@@ -313,8 +367,34 @@ static bool PSDetectPhaseSpaceDomain(hid_t domainGroup, int& numPhysical, int& n
   return numVelocity > 0;
 }
 
-// Build mapping from WARPM row-major node index to VTK Lagrange node index
-static std::vector<int> PSBuildWarpmToVTKLagrangeMapping(int orderX, int orderY)
+//----------------------------------------------------------------------------
+// Node Ordering Mappings: WARPM (row-major) to VTK Lagrange
+//----------------------------------------------------------------------------
+
+// 1D mapping: VTK_LAGRANGE_CURVE
+// VTK order: endpoints first (0, order), then interior (1 to order-1)
+// WARPM order: sequential (0, 1, 2, ..., order)
+static std::vector<int> PSBuildWarpmToVTKMapping1D(int order)
+{
+  int numNodes = order + 1;
+  std::vector<int> mapping(numNodes, -1);
+  int vtkIdx = 0;
+
+  // 1. Two endpoints
+  mapping[0] = vtkIdx++;           // Left endpoint
+  mapping[order] = vtkIdx++;       // Right endpoint
+
+  // 2. Interior nodes (1 to order-1)
+  for (int i = 1; i < order; ++i)
+  {
+    mapping[i] = vtkIdx++;
+  }
+
+  return mapping;
+}
+
+// 2D mapping: VTK_LAGRANGE_QUADRILATERAL (existing function, renamed for consistency)
+static std::vector<int> PSBuildWarpmToVTKMapping2D(int orderX, int orderY)
 {
   int nodesX = orderX + 1;
   int nodesY = orderY + 1;
@@ -351,6 +431,122 @@ static std::vector<int> PSBuildWarpmToVTKLagrangeMapping(int orderX, int orderY)
   }
 
   return xyToVTK;
+}
+
+// 3D mapping: VTK_LAGRANGE_HEXAHEDRON
+// VTK order: 8 corners, 12 edges (interior), 6 faces (interior), volume interior
+// WARPM order: row-major x*nodesY*nodesZ + y*nodesZ + z
+static std::vector<int> PSBuildWarpmToVTKMapping3D(int orderX, int orderY, int orderZ)
+{
+  int nodesX = orderX + 1;
+  int nodesY = orderY + 1;
+  int nodesZ = orderZ + 1;
+  int totalNodes = nodesX * nodesY * nodesZ;
+
+  // Helper lambda to compute WARPM flat index from (x,y,z)
+  auto warpmIdx = [nodesY, nodesZ](int x, int y, int z) {
+    return x * nodesY * nodesZ + y * nodesZ + z;
+  };
+
+  std::vector<int> mapping(totalNodes, -1);
+  int vtkIdx = 0;
+
+  // 1. Eight corners (VTK ordering)
+  mapping[warpmIdx(0, 0, 0)] = vtkIdx++;
+  mapping[warpmIdx(orderX, 0, 0)] = vtkIdx++;
+  mapping[warpmIdx(orderX, orderY, 0)] = vtkIdx++;
+  mapping[warpmIdx(0, orderY, 0)] = vtkIdx++;
+  mapping[warpmIdx(0, 0, orderZ)] = vtkIdx++;
+  mapping[warpmIdx(orderX, 0, orderZ)] = vtkIdx++;
+  mapping[warpmIdx(orderX, orderY, orderZ)] = vtkIdx++;
+  mapping[warpmIdx(0, orderY, orderZ)] = vtkIdx++;
+
+  // 2. Twelve edges (interior nodes only, all in increasing parameter direction)
+  // Bottom face edges (z=0)
+  for (int x = 1; x < orderX; ++x)  // Edge 0-1: y=0, z=0
+    mapping[warpmIdx(x, 0, 0)] = vtkIdx++;
+  for (int y = 1; y < orderY; ++y)  // Edge 1-2: x=orderX, z=0
+    mapping[warpmIdx(orderX, y, 0)] = vtkIdx++;
+  for (int x = 1; x < orderX; ++x)  // Edge 3-2: y=orderY, z=0
+    mapping[warpmIdx(x, orderY, 0)] = vtkIdx++;
+  for (int y = 1; y < orderY; ++y)  // Edge 0-3: x=0, z=0
+    mapping[warpmIdx(0, y, 0)] = vtkIdx++;
+
+  // Top face edges (z=orderZ)
+  for (int x = 1; x < orderX; ++x)  // Edge 4-5: y=0, z=orderZ
+    mapping[warpmIdx(x, 0, orderZ)] = vtkIdx++;
+  for (int y = 1; y < orderY; ++y)  // Edge 5-6: x=orderX, z=orderZ
+    mapping[warpmIdx(orderX, y, orderZ)] = vtkIdx++;
+  for (int x = 1; x < orderX; ++x)  // Edge 7-6: y=orderY, z=orderZ
+    mapping[warpmIdx(x, orderY, orderZ)] = vtkIdx++;
+  for (int y = 1; y < orderY; ++y)  // Edge 4-7: x=0, z=orderZ
+    mapping[warpmIdx(0, y, orderZ)] = vtkIdx++;
+
+  // Vertical edges
+  for (int z = 1; z < orderZ; ++z)  // Edge 0-4: x=0, y=0
+    mapping[warpmIdx(0, 0, z)] = vtkIdx++;
+  for (int z = 1; z < orderZ; ++z)  // Edge 1-5: x=orderX, y=0
+    mapping[warpmIdx(orderX, 0, z)] = vtkIdx++;
+  for (int z = 1; z < orderZ; ++z)  // Edge 2-6: x=orderX, y=orderY
+    mapping[warpmIdx(orderX, orderY, z)] = vtkIdx++;
+  for (int z = 1; z < orderZ; ++z)  // Edge 3-7: x=0, y=orderY
+    mapping[warpmIdx(0, orderY, z)] = vtkIdx++;
+
+  // 3. Six faces (interior nodes only)
+  // Face at z=0 (bottom)
+  for (int y = 1; y < orderY; ++y)
+    for (int x = 1; x < orderX; ++x)
+      mapping[warpmIdx(x, y, 0)] = vtkIdx++;
+
+  // Face at z=orderZ (top)
+  for (int y = 1; y < orderY; ++y)
+    for (int x = 1; x < orderX; ++x)
+      mapping[warpmIdx(x, y, orderZ)] = vtkIdx++;
+
+  // Face at y=0 (front)
+  for (int z = 1; z < orderZ; ++z)
+    for (int x = 1; x < orderX; ++x)
+      mapping[warpmIdx(x, 0, z)] = vtkIdx++;
+
+  // Face at y=orderY (back)
+  for (int z = 1; z < orderZ; ++z)
+    for (int x = 1; x < orderX; ++x)
+      mapping[warpmIdx(x, orderY, z)] = vtkIdx++;
+
+  // Face at x=0 (left)
+  for (int z = 1; z < orderZ; ++z)
+    for (int y = 1; y < orderY; ++y)
+      mapping[warpmIdx(0, y, z)] = vtkIdx++;
+
+  // Face at x=orderX (right)
+  for (int z = 1; z < orderZ; ++z)
+    for (int y = 1; y < orderY; ++y)
+      mapping[warpmIdx(orderX, y, z)] = vtkIdx++;
+
+  // 4. Interior volume nodes
+  for (int z = 1; z < orderZ; ++z)
+    for (int y = 1; y < orderY; ++y)
+      for (int x = 1; x < orderX; ++x)
+        mapping[warpmIdx(x, y, z)] = vtkIdx++;
+
+  return mapping;
+}
+
+// Dispatcher: select 1D/2D/3D mapping based on orders vector size
+static std::vector<int> PSBuildWarpmToVTKMapping(const std::vector<int>& orders)
+{
+  switch (orders.size())
+  {
+    case 1:
+      return PSBuildWarpmToVTKMapping1D(orders[0]);
+    case 2:
+      return PSBuildWarpmToVTKMapping2D(orders[0], orders[1]);
+    case 3:
+      return PSBuildWarpmToVTKMapping3D(orders[0], orders[1], orders[2]);
+    default:
+      // Return empty mapping for unsupported dimensions
+      return std::vector<int>();
+  }
 }
 
 // Check if an HDF5 file has WARPM structure
@@ -441,6 +637,7 @@ vtkWARPMPhaseSpaceReader::vtkWARPMPhaseSpaceReader()
 {
   this->PhysicalSliceIndices[0] = 0;
   this->PhysicalSliceIndices[1] = 0;
+  this->PhysicalSliceIndices[2] = 0;
   // Override base class: set 3 output ports
   // Port 0: Physical space mesh
   // Port 1: Velocity space mesh
@@ -564,7 +761,8 @@ void vtkWARPMPhaseSpaceReader::PrintSelf(ostream& os, vtkIndent indent)
 {
   this->Superclass::PrintSelf(os, indent);
   os << indent << "PhysicalSliceIndices: " << this->PhysicalSliceIndices[0]
-     << ", " << this->PhysicalSliceIndices[1] << "\n";
+     << ", " << this->PhysicalSliceIndices[1]
+     << ", " << this->PhysicalSliceIndices[2] << "\n";
   os << indent << "PhysicalNodeIndex: " << this->PhysicalNodeIndex << "\n";
   os << indent << "HasPhaseSpaceVariables: " << this->HasPhaseSpaceVariables << "\n";
 }
@@ -678,6 +876,14 @@ int vtkWARPMPhaseSpaceReader::RequestData(
   vtkInformationVector** inputVector,
   vtkInformationVector* outputVector)
 {
+  // Debug: track RequestData calls
+  static int callCount = 0;
+  callCount++;
+  {
+    std::ofstream debugFile("/tmp/_warpm_debug.txt", std::ios::app);
+    debugFile << "=== RequestData call #" << callCount << " ===\n";
+  }
+
   vtkInformation* outInfo = outputVector->GetInformationObject(0);
   vtkUnstructuredGrid* output = vtkUnstructuredGrid::SafeDownCast(
     outInfo->Get(vtkDataObject::DATA_OBJECT()));
@@ -806,6 +1012,19 @@ int vtkWARPMPhaseSpaceReader::RequestData(
     }
   }
 
+  // Debug output to trace variable detection
+  {
+    std::ofstream debugFile("/tmp/_warpm_debug.txt");
+    debugFile << "Physical vars (" << physicalVars.size() << "): ";
+    for (const auto& v : physicalVars) debugFile << v << " ";
+    debugFile << "\n";
+    debugFile << "Physical domain: " << physicalDomainName << "\n";
+    debugFile << "Phase space vars (" << phaseSpaceVars.size() << "): ";
+    for (const auto& v : phaseSpaceVars) debugFile << v << " ";
+    debugFile << "\n";
+    debugFile << "Phase space domain: " << phaseSpaceDomainName << "\n";
+  }
+
   if (physicalVars.empty() && phaseSpaceVars.empty())
   {
     vtkWarningMacro("No variables enabled");
@@ -843,7 +1062,7 @@ int vtkWARPMPhaseSpaceReader::RequestData(
 
     H5Gclose(domain);
 
-    if (ndims < 2 || numCells.size() < 2 || coordExprs.size() < 2)
+    if (ndims < 1 || numCells.empty() || coordExprs.empty())
     {
       vtkErrorMacro("Invalid domain dimensions");
       if (domainsGroup >= 0) H5Gclose(domainsGroup);
@@ -852,16 +1071,16 @@ int vtkWARPMPhaseSpaceReader::RequestData(
       return 0;
     }
 
+    // Limit to 3D max
+    int numPhysDims = std::min(ndims, 3);
+
     // Default startIndices to 0 if not present
-    if (startIndices.size() < 2)
+    if (startIndices.size() < static_cast<size_t>(numPhysDims))
     {
-      startIndices.resize(ndims, 0);
+      startIndices.resize(numPhysDims, 0);
     }
 
-    // Evaluate coordinate expressions to get vertex positions
-    std::vector<double> vertexX = PSComputeVertexPositions(coordExprs[0], startIndices[0], numCells[0]);
-    std::vector<double> vertexY = PSComputeVertexPositions(coordExprs[1], startIndices[1], numCells[1]);
-
+    // Get element order from first variable
     hid_t firstVarGroup = H5Gopen(varsGroup, physicalVars[0].c_str(), H5P_DEFAULT);
     std::vector<int> elementOrder;
     int entriesPerElement = 0;
@@ -878,87 +1097,101 @@ int vtkWARPMPhaseSpaceReader::RequestData(
     H5Dclose(firstDataset);
     H5Gclose(firstVarGroup);
 
-    int dataNx = static_cast<int>(dataDims[0]);
-    int dataNy = static_cast<int>(dataDims[1]);
-    int nodesPerElement = static_cast<int>(dataDims[2]);
+    // Build dimension arrays for N-dimensional physical mesh
+    std::vector<int> physNumCellsVec(numPhysDims);
+    std::vector<int> physOrders(numPhysDims);
+    std::vector<std::vector<double>> physVertices(numPhysDims);
+    std::vector<std::vector<double>> physGLL(numPhysDims);
 
-    int orderX = (elementOrder.size() > 0) ? elementOrder[0] : static_cast<int>(std::sqrt(nodesPerElement)) - 1;
-    int orderY = (elementOrder.size() > 1) ? elementOrder[1] : orderX;
-    int nodesX = orderX + 1;
-    int nodesY = orderY + 1;
+    for (int d = 0; d < numPhysDims; ++d)
+    {
+      physNumCellsVec[d] = numCells[d];
+      physOrders[d] = (d < static_cast<int>(elementOrder.size())) ? elementOrder[d] : 2;
+      physVertices[d] = PSComputeVertexPositions(coordExprs[d], startIndices[d], numCells[d]);
+      physGLL[d] = PSGetGLLNodes(physOrders[d]);
+    }
+
+    int nodesPerElement = PSComputeTotalNodes(physOrders);
+    int totalCells = 1;
+    for (int nc : physNumCellsVec) totalCells *= nc;
+    int totalNodes = totalCells * nodesPerElement;
+
+    // Build nodes-per-dimension array for index decomposition
+    std::vector<int> physNodesPerDim(numPhysDims);
+    for (int d = 0; d < numPhysDims; ++d)
+    {
+      physNodesPerDim[d] = physOrders[d] + 1;
+    }
 
     // Check if we can use cached geometry
     bool canUseCache = this->GeometryCached &&
-                       this->CachedNx == dataNx &&
-                       this->CachedNy == dataNy &&
-                       this->CachedNodesPerElement == nodesPerElement;
+                       this->CachedNodesPerElement == nodesPerElement &&
+                       this->CachedNdims == numPhysDims &&
+                       this->CachedDataDims == physNumCellsVec;
 
     if (!canUseCache)
     {
-      auto gllX = PSGetGLLNodes(orderX);
-      auto gllY = PSGetGLLNodes(orderY);
-      this->CachedWarpmToVTK = PSBuildWarpmToVTKLagrangeMapping(orderX, orderY);
+      this->CachedWarpmToVTK = PSBuildWarpmToVTKMapping(physOrders);
 
       this->CachedPoints = vtkSmartPointer<vtkPoints>::New();
-      int totalNodes = dataNx * dataNy * nodesPerElement;
       this->CachedPoints->SetNumberOfPoints(totalNodes);
 
-      for (int ey = 0; ey < dataNy; ++ey)
+      // Iterate over all physical cells using flat index
+      for (int cellIdx = 0; cellIdx < totalCells; ++cellIdx)
       {
-        for (int ex = 0; ex < dataNx; ++ex)
+        // Decompose cell index into per-dimension indices
+        std::vector<int> cellIndices = PSDecomposeIndex(cellIdx, physNumCellsVec);
+
+        // Get cell bounds from vertex positions for each dimension
+        std::vector<double> cellMin(numPhysDims), cellMax(numPhysDims);
+        for (int d = 0; d < numPhysDims; ++d)
         {
-          // Cell bounds from pre-computed vertex positions
-          double elemXMin = vertexX[ex];
-          double elemXMax = vertexX[ex + 1];
-          double elemYMin = vertexY[ey];
-          double elemYMax = vertexY[ey + 1];
+          cellMin[d] = physVertices[d][cellIndices[d]];
+          cellMax[d] = physVertices[d][cellIndices[d] + 1];
+        }
 
-          int elemStartIdx = (ey * dataNx + ex) * nodesPerElement;
+        int elemStartIdx = cellIdx * nodesPerElement;
 
-          for (int ix = 0; ix < nodesX; ++ix)
+        // Iterate over all nodes within this cell
+        for (int nodeIdx = 0; nodeIdx < nodesPerElement; ++nodeIdx)
+        {
+          // Decompose node index into per-dimension indices
+          std::vector<int> nodeIndices = PSDecomposeIndex(nodeIdx, physNodesPerDim);
+
+          // Compute physical position (VTK always uses 3D coordinates)
+          double pos[3] = {0.0, 0.0, 0.0};
+          for (int d = 0; d < numPhysDims; ++d)
           {
-            for (int iy = 0; iy < nodesY; ++iy)
-            {
-              int warpmLocalIdx = ix * nodesY + iy;
-              int vtkLocalIdx = this->CachedWarpmToVTK[warpmLocalIdx];
-              int vtkPointIdx = elemStartIdx + vtkLocalIdx;
-
-              double xi = gllX[ix];
-              double eta = gllY[iy];
-              double x = elemXMin + (xi + 1.0) * 0.5 * (elemXMax - elemXMin);
-              double y = elemYMin + (eta + 1.0) * 0.5 * (elemYMax - elemYMin);
-
-              this->CachedPoints->SetPoint(vtkPointIdx, x, y, 0.0);
-            }
+            double xi = physGLL[d][nodeIndices[d]];
+            pos[d] = cellMin[d] + (xi + 1.0) * 0.5 * (cellMax[d] - cellMin[d]);
           }
+
+          int vtkLocalIdx = this->CachedWarpmToVTK[nodeIdx];
+          int vtkPointIdx = elemStartIdx + vtkLocalIdx;
+          this->CachedPoints->SetPoint(vtkPointIdx, pos[0], pos[1], pos[2]);
         }
       }
 
       this->CachedCells = vtkSmartPointer<vtkCellArray>::New();
-      for (int ey = 0; ey < dataNy; ++ey)
+      for (int cellIdx = 0; cellIdx < totalCells; ++cellIdx)
       {
-        for (int ex = 0; ex < dataNx; ++ex)
+        int elemStartIdx = cellIdx * nodesPerElement;
+        std::vector<vtkIdType> cellPts(nodesPerElement);
+        for (int i = 0; i < nodesPerElement; ++i)
         {
-          int elemStartIdx = (ey * dataNx + ex) * nodesPerElement;
-          std::vector<vtkIdType> cellPts(nodesPerElement);
-          for (int i = 0; i < nodesPerElement; ++i)
-          {
-            cellPts[i] = elemStartIdx + i;
-          }
-          this->CachedCells->InsertNextCell(nodesPerElement, cellPts.data());
+          cellPts[i] = elemStartIdx + i;
         }
+        this->CachedCells->InsertNextCell(nodesPerElement, cellPts.data());
       }
 
-      this->CachedNx = dataNx;
-      this->CachedNy = dataNy;
+      this->CachedNdims = numPhysDims;
+      this->CachedDataDims = physNumCellsVec;
       this->CachedNodesPerElement = nodesPerElement;
       this->GeometryCached = true;
     }
 
     output->SetPoints(this->CachedPoints);
-    output->SetCells(VTK_LAGRANGE_QUADRILATERAL, this->CachedCells);
-
-    int totalNodes = dataNx * dataNy * nodesPerElement;
+    output->SetCells(PSGetLagrangeCellType(numPhysDims), this->CachedCells);
 
     // Load data for each physical-space variable
     for (const auto& varName : physicalVars)
@@ -980,9 +1213,13 @@ int vtkWARPMPhaseSpaceReader::RequestData(
       std::vector<hsize_t> varDims(varNdims);
       H5Sget_simple_extent_dims(dataspace, varDims.data(), nullptr);
 
-      int varNumComponents = static_cast<int>(varDims[3]);
+      // Last dimension is components, second-to-last is nodesPerElement
+      int varNumComponents = static_cast<int>(varDims[varNdims - 1]);
 
-      std::vector<double> data(dataNx * dataNy * nodesPerElement * varNumComponents);
+      // Read all data
+      hsize_t totalSize = 1;
+      for (int i = 0; i < varNdims; ++i) totalSize *= varDims[i];
+      std::vector<double> data(totalSize);
       H5Dread(dataset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data.data());
 
       H5Sclose(dataspace);
@@ -1001,25 +1238,28 @@ int vtkWARPMPhaseSpaceReader::RequestData(
         fieldArrays.push_back(arr);
       }
 
-      for (int ey = 0; ey < dataNy; ++ey)
+      // Generalized N-dimensional data loading loop
+      for (int cellIdx = 0; cellIdx < totalCells; ++cellIdx)
       {
-        for (int ex = 0; ex < dataNx; ++ex)
+        // Decompose cell index into per-dimension indices
+        std::vector<int> cellIndices = PSDecomposeIndex(cellIdx, physNumCellsVec);
+
+        int elemStartIdx = cellIdx * nodesPerElement;
+
+        for (int nodeIdx = 0; nodeIdx < nodesPerElement; ++nodeIdx)
         {
-          int elemStartIdx = (ey * dataNx + ex) * nodesPerElement;
+          int vtkLocalIdx = this->CachedWarpmToVTK[nodeIdx];
+          int vtkPointIdx = elemStartIdx + vtkLocalIdx;
 
-          for (int ix = 0; ix < nodesX; ++ix)
+          // Compute flat data index (row-major order in HDF5 data)
+          int dataCellIdx = PSComputeFlatIndex(cellIndices, physNumCellsVec);
+          int dataIdx = (dataCellIdx * nodesPerElement + nodeIdx) * varNumComponents;
+
+          for (int c = 0; c < varNumComponents; ++c)
           {
-            for (int iy = 0; iy < nodesY; ++iy)
+            if (dataIdx + c < static_cast<int>(data.size()))
             {
-              int warpmLocalIdx = ix * nodesY + iy;
-              int vtkLocalIdx = this->CachedWarpmToVTK[warpmLocalIdx];
-              int vtkPointIdx = elemStartIdx + vtkLocalIdx;
-
-              int warpmDataIdx = ((ex * dataNy + ey) * nodesPerElement + warpmLocalIdx) * varNumComponents;
-              for (int c = 0; c < varNumComponents; ++c)
-              {
-                fieldArrays[c]->SetValue(vtkPointIdx, data[warpmDataIdx + c]);
-              }
+              fieldArrays[c]->SetValue(vtkPointIdx, data[dataIdx + c]);
             }
           }
         }
@@ -1040,6 +1280,16 @@ int vtkWARPMPhaseSpaceReader::RequestData(
     vtkInformation* phaseOutInfo = outputVector->GetInformationObject(1);
     vtkUnstructuredGrid* phaseOutput = vtkUnstructuredGrid::SafeDownCast(
       phaseOutInfo->Get(vtkDataObject::DATA_OBJECT()));
+
+    // Debug: trace velocity mesh conditions
+    {
+      std::ofstream debugFile("/tmp/_warpm_debug.txt", std::ios::app);
+      debugFile << "--- Velocity mesh building ---\n";
+      debugFile << "phaseOutInfo: " << (phaseOutInfo ? "valid" : "NULL") << "\n";
+      debugFile << "phaseOutput: " << (phaseOutput ? "valid" : "NULL") << "\n";
+      debugFile << "domainsGroup: " << domainsGroup << "\n";
+      debugFile << "phaseSpaceDomainName: '" << phaseSpaceDomainName << "'\n";
+    }
 
     if (phaseOutput && domainsGroup >= 0 && !phaseSpaceDomainName.empty())
     {
@@ -1076,92 +1326,210 @@ int vtkWARPMPhaseSpaceReader::RequestData(
           }
         }
 
-        if (velDimIndices.size() >= 2)
+        // Debug: trace velocity dimension detection
         {
-          int velNx = phaseNumCells[velDimIndices[0]];
-          int velNy = phaseNumCells[velDimIndices[1]];
+          std::ofstream debugFile("/tmp/_warpm_debug.txt", std::ios::app);
+          debugFile << "--- Phase space domain analysis ---\n";
+          debugFile << "Total dimensions: " << coordNames.size() << "\n";
+          debugFile << "Physical dimensions: " << physDimIndices.size() << " (indices: ";
+          for (auto c : physDimIndices) debugFile << c << " ";
+          debugFile << ")\n";
+          debugFile << "Velocity dimensions: " << velDimIndices.size() << " (indices: ";
+          for (auto c : velDimIndices) debugFile << c << " ";
+          debugFile << ")\n";
+          debugFile << "coordNames: ";
+          for (const auto& c : coordNames) debugFile << c << " ";
+          debugFile << "\n";
+          debugFile << "phaseNumCells: ";
+          for (auto c : phaseNumCells) debugFile << c << " ";
+          debugFile << "\n";
+          debugFile << "phaseStartIndices: ";
+          for (auto c : phaseStartIndices) debugFile << c << " ";
+          debugFile << "\n";
+          debugFile << "Velocity coordinate expressions:\n";
+          for (size_t i = 0; i < velDimIndices.size(); ++i)
+          {
+            int idx = velDimIndices[i];
+            if (idx < static_cast<int>(phaseCoordExprs.size()))
+            {
+              debugFile << "  dim " << i << " (idx " << idx << ", " << coordNames[idx] << "): "
+                        << phaseCoordExprs[idx] << "\n";
+            }
+          }
+          debugFile << "Physical coordinate expressions:\n";
+          for (size_t i = 0; i < physDimIndices.size(); ++i)
+          {
+            int idx = physDimIndices[i];
+            if (idx < static_cast<int>(phaseCoordExprs.size()))
+            {
+              debugFile << "  dim " << i << " (idx " << idx << ", " << coordNames[idx] << "): "
+                        << phaseCoordExprs[idx] << "\n";
+            }
+          }
+        }
 
-          // Compute velocity vertex positions
-          std::vector<double> velVertexX = PSComputeVertexPositions(
-            phaseCoordExprs[velDimIndices[0]],
-            phaseStartIndices[velDimIndices[0]],
-            phaseNumCells[velDimIndices[0]]);
+        int numPhysDims = static_cast<int>(physDimIndices.size());
+        int numVelDims = static_cast<int>(velDimIndices.size());
 
-          std::vector<double> velVertexY = PSComputeVertexPositions(
-            phaseCoordExprs[velDimIndices[1]],
-            phaseStartIndices[velDimIndices[1]],
-            phaseNumCells[velDimIndices[1]]);
+        // Validate PhysicalSliceIndices for dimensions beyond actual physical dimensions
+        // For 1D physical data, indices [1] and [2] should be 0
+        // For 2D physical data, index [2] should be 0
+        for (int d = numPhysDims; d < 3; ++d)
+        {
+          if (this->PhysicalSliceIndices[d] != 0)
+          {
+            vtkWarningMacro("PhysicalSliceIndices[" << d << "] = "
+              << this->PhysicalSliceIndices[d]
+              << " is invalid for " << numPhysDims << "D physical data (only "
+              << numPhysDims << " physical dimension" << (numPhysDims > 1 ? "s" : "")
+              << "), value ignored (treated as 0)");
+          }
+        }
 
+        if (numVelDims >= 1 && numVelDims <= 3)
+        {
+          // Build velocity dimension arrays
+          std::vector<int> velNumCellsVec(numVelDims);
+          std::vector<int> velOrders(numVelDims);
+          std::vector<std::vector<double>> velVertices(numVelDims);
+          std::vector<std::vector<double>> velGLL(numVelDims);
+
+          // Debug: trace velocity mesh computation
+          {
+            std::ofstream debugFile("/tmp/_warpm_debug.txt", std::ios::app);
+            debugFile << "--- Computing " << numVelDims << "D velocity mesh (GENERALIZED) ---\n";
+            debugFile << "velNumCells: [";
+            for (int d = 0; d < numVelDims; ++d)
+            {
+              int idx = velDimIndices[d];
+              debugFile << phaseNumCells[idx] << (d < numVelDims - 1 ? ", " : "");
+            }
+            debugFile << "]\n";
+            debugFile << "Computing vertex positions for each velocity dimension:\n";
+            for (int d = 0; d < numVelDims; ++d)
+            {
+              int idx = velDimIndices[d];
+              debugFile << "  vel dim " << d << ": startIndex=" << phaseStartIndices[idx]
+                        << ", numCells=" << phaseNumCells[idx] << "\n";
+            }
+          }
+
+          // Get element orders from first phase space variable
           hid_t firstPhaseVar = H5Gopen(varsGroup, phaseSpaceVars[0].c_str(), H5P_DEFAULT);
           std::vector<int> phaseElemOrder;
           PSReadIntArrayAttribute(firstPhaseVar, "ElementOrder", phaseElemOrder);
-
-          int velOrderX = phaseElemOrder.size() > static_cast<size_t>(velDimIndices[0])
-                          ? phaseElemOrder[velDimIndices[0]] : 2;
-          int velOrderY = phaseElemOrder.size() > static_cast<size_t>(velDimIndices[1])
-                          ? phaseElemOrder[velDimIndices[1]] : 2;
-          int velNodesX = velOrderX + 1;
-          int velNodesY = velOrderY + 1;
-          int velNodesPerElement = velNodesX * velNodesY;
-
           H5Gclose(firstPhaseVar);
 
-          auto gllVelX = PSGetGLLNodes(velOrderX);
-          auto gllVelY = PSGetGLLNodes(velOrderY);
-          auto velWarpmToVTK = PSBuildWarpmToVTKLagrangeMapping(velOrderX, velOrderY);
+          // Compute vertex positions and setup for each velocity dimension
+          for (int d = 0; d < numVelDims; ++d)
+          {
+            int idx = velDimIndices[d];
+            velNumCellsVec[d] = phaseNumCells[idx];
+            velOrders[d] = (idx < static_cast<int>(phaseElemOrder.size()))
+                           ? phaseElemOrder[idx] : 2;
+            velVertices[d] = PSComputeVertexPositions(
+              phaseCoordExprs[idx], phaseStartIndices[idx], phaseNumCells[idx]);
+            velGLL[d] = PSGetGLLNodes(velOrders[d]);
+          }
 
+          // Debug: check vertex results
+          {
+            std::ofstream debugFile("/tmp/_warpm_debug.txt", std::ios::app);
+            for (int d = 0; d < numVelDims; ++d)
+            {
+              debugFile << "velVertices[" << d << "] (" << velVertices[d].size() << " values): ";
+              for (double v : velVertices[d]) debugFile << v << " ";
+              debugFile << "\n";
+            }
+          }
+
+          // Compute total cells and nodes
+          int velNodesPerElement = PSComputeTotalNodes(velOrders);
+          int velTotalCells = 1;
+          for (int nc : velNumCellsVec) velTotalCells *= nc;
+          int velTotalNodes = velTotalCells * velNodesPerElement;
+
+          // Build node ordering mapping
+          auto velWarpmToVTK = PSBuildWarpmToVTKMapping(velOrders);
+
+          // Build nodes-per-dimension array for index decomposition
+          std::vector<int> velNodesPerDim(numVelDims);
+          for (int d = 0; d < numVelDims; ++d)
+          {
+            velNodesPerDim[d] = velOrders[d] + 1;
+          }
+
+          // Create velocity mesh points
           vtkNew<vtkPoints> velPoints;
-          int velTotalNodes = velNx * velNy * velNodesPerElement;
           velPoints->SetNumberOfPoints(velTotalNodes);
 
-          for (int ey = 0; ey < velNy; ++ey)
+          // Iterate over all velocity cells using flat index
+          for (int cellIdx = 0; cellIdx < velTotalCells; ++cellIdx)
           {
-            for (int ex = 0; ex < velNx; ++ex)
+            // Decompose cell index into per-dimension indices
+            std::vector<int> cellIndices = PSDecomposeIndex(cellIdx, velNumCellsVec);
+
+            // Get cell bounds from vertex positions for each dimension
+            std::vector<double> cellMin(numVelDims), cellMax(numVelDims);
+            for (int d = 0; d < numVelDims; ++d)
             {
-              // Cell bounds from pre-computed vertex positions
-              double elemVxMin = velVertexX[ex];
-              double elemVxMax = velVertexX[ex + 1];
-              double elemVyMin = velVertexY[ey];
-              double elemVyMax = velVertexY[ey + 1];
+              cellMin[d] = velVertices[d][cellIndices[d]];
+              cellMax[d] = velVertices[d][cellIndices[d] + 1];
+            }
 
-              int elemStartIdx = (ey * velNx + ex) * velNodesPerElement;
+            int elemStartIdx = cellIdx * velNodesPerElement;
 
-              for (int ix = 0; ix < velNodesX; ++ix)
+            // Iterate over all nodes within this cell
+            for (int nodeIdx = 0; nodeIdx < velNodesPerElement; ++nodeIdx)
+            {
+              // Decompose node index into per-dimension indices
+              std::vector<int> nodeIndices = PSDecomposeIndex(nodeIdx, velNodesPerDim);
+
+              // Compute physical position (VTK always uses 3D coordinates)
+              double pos[3] = {0.0, 0.0, 0.0};
+              for (int d = 0; d < numVelDims; ++d)
               {
-                for (int iy = 0; iy < velNodesY; ++iy)
-                {
-                  int warpmLocalIdx = ix * velNodesY + iy;
-                  int vtkLocalIdx = velWarpmToVTK[warpmLocalIdx];
-                  int vtkPointIdx = elemStartIdx + vtkLocalIdx;
-
-                  double xi = gllVelX[ix];
-                  double eta = gllVelY[iy];
-                  double vx = elemVxMin + (xi + 1.0) * 0.5 * (elemVxMax - elemVxMin);
-                  double vy = elemVyMin + (eta + 1.0) * 0.5 * (elemVyMax - elemVyMin);
-
-                  velPoints->SetPoint(vtkPointIdx, vx, vy, 0.0);
-                }
+                double xi = velGLL[d][nodeIndices[d]];
+                pos[d] = cellMin[d] + (xi + 1.0) * 0.5 * (cellMax[d] - cellMin[d]);
               }
+
+              int vtkLocalIdx = velWarpmToVTK[nodeIdx];
+              int vtkPointIdx = elemStartIdx + vtkLocalIdx;
+              velPoints->SetPoint(vtkPointIdx, pos[0], pos[1], pos[2]);
             }
           }
 
+          // Create velocity mesh cells
           vtkNew<vtkCellArray> velCells;
-          for (int ey = 0; ey < velNy; ++ey)
+          for (int cellIdx = 0; cellIdx < velTotalCells; ++cellIdx)
           {
-            for (int ex = 0; ex < velNx; ++ex)
+            int elemStartIdx = cellIdx * velNodesPerElement;
+            std::vector<vtkIdType> cellPts(velNodesPerElement);
+            for (int i = 0; i < velNodesPerElement; ++i)
             {
-              int elemStartIdx = (ey * velNx + ex) * velNodesPerElement;
-              std::vector<vtkIdType> cellPts(velNodesPerElement);
-              for (int i = 0; i < velNodesPerElement; ++i)
-              {
-                cellPts[i] = elemStartIdx + i;
-              }
-              velCells->InsertNextCell(velNodesPerElement, cellPts.data());
+              cellPts[i] = elemStartIdx + i;
             }
+            velCells->InsertNextCell(velNodesPerElement, cellPts.data());
           }
 
+          // Set mesh with appropriate cell type
           phaseOutput->SetPoints(velPoints);
-          phaseOutput->SetCells(VTK_LAGRANGE_QUADRILATERAL, velCells);
+          phaseOutput->SetCells(PSGetLagrangeCellType(numVelDims), velCells);
+
+          // Debug: verify velocity mesh was set correctly
+          {
+            std::ofstream debugFile("/tmp/_warpm_debug.txt", std::ios::app);
+            debugFile << "--- After " << numVelDims << "D velocity mesh setup ---\n";
+            debugFile << "velTotalNodes=" << velTotalNodes << ", velTotalCells=" << velTotalCells << "\n";
+            debugFile << "phaseOutput points: " << phaseOutput->GetNumberOfPoints() << "\n";
+            debugFile << "phaseOutput cells: " << phaseOutput->GetNumberOfCells() << "\n";
+            debugFile << "Cell type: " << PSGetLagrangeCellType(numVelDims) << "\n";
+            double bounds[6];
+            phaseOutput->GetBounds(bounds);
+            debugFile << "phaseOutput bounds: X=[" << bounds[0] << ", " << bounds[1]
+                      << "], Y=[" << bounds[2] << ", " << bounds[3]
+                      << "], Z=[" << bounds[4] << ", " << bounds[5] << "]\n";
+          }
 
           // ============================================================
           // PORT 2: Probe location (single point in physical space)
@@ -1170,65 +1538,63 @@ int vtkWARPMPhaseSpaceReader::RequestData(
           vtkPolyData* probeOutput = vtkPolyData::SafeDownCast(
             probeOutInfo->Get(vtkDataObject::DATA_OBJECT()));
 
-          if (probeOutput && physDimIndices.size() >= 2)
+          int numPhysDims = static_cast<int>(physDimIndices.size());
+          if (probeOutput && numPhysDims >= 1 && numPhysDims <= 3)
           {
-            // Compute physical vertex positions
-            std::vector<double> physVertexX = PSComputeVertexPositions(
-              phaseCoordExprs[physDimIndices[0]],
-              phaseStartIndices[physDimIndices[0]],
-              phaseNumCells[physDimIndices[0]]);
-            std::vector<double> physVertexY = PSComputeVertexPositions(
-              phaseCoordExprs[physDimIndices[1]],
-              phaseStartIndices[physDimIndices[1]],
-              phaseNumCells[physDimIndices[1]]);
-
-            // Get physical element orders (reopen the variable to read element order)
+            // Get physical element orders
             hid_t probePhaseVar = H5Gopen(varsGroup, phaseSpaceVars[0].c_str(), H5P_DEFAULT);
             std::vector<int> probeElemOrder;
             PSReadIntArrayAttribute(probePhaseVar, "ElementOrder", probeElemOrder);
             H5Gclose(probePhaseVar);
 
-            int physOrderX = probeElemOrder.size() > static_cast<size_t>(physDimIndices[0])
-                             ? probeElemOrder[physDimIndices[0]] : 2;
-            int physOrderY = probeElemOrder.size() > static_cast<size_t>(physDimIndices[1])
-                             ? probeElemOrder[physDimIndices[1]] : 2;
-            int physNodesX = physOrderX + 1;
-            int physNodesY = physOrderY + 1;
+            // Build physical dimension arrays
+            std::vector<std::vector<double>> physVertices(numPhysDims);
+            std::vector<int> physOrders(numPhysDims);
+            std::vector<std::vector<double>> physGLL(numPhysDims);
+            std::vector<int> sliceIndices(numPhysDims);
 
-            // Get GLL nodes for physical dimensions
-            auto gllPhysX = PSGetGLLNodes(physOrderX);
-            auto gllPhysY = PSGetGLLNodes(physOrderY);
+            for (int d = 0; d < numPhysDims; ++d)
+            {
+              int idx = physDimIndices[d];
+              physOrders[d] = (idx < static_cast<int>(probeElemOrder.size()))
+                              ? probeElemOrder[idx] : 2;
+              physVertices[d] = PSComputeVertexPositions(
+                phaseCoordExprs[idx], phaseStartIndices[idx], phaseNumCells[idx]);
+              physGLL[d] = PSGetGLLNodes(physOrders[d]);
 
-            // Get slice indices with bounds checking
-            int sliceX = this->PhysicalSliceIndices[0];
-            int sliceY = this->PhysicalSliceIndices[1];
-            int maxSliceX = phaseNumCells[physDimIndices[0]] - 1;
-            int maxSliceY = phaseNumCells[physDimIndices[1]] - 1;
-            sliceX = std::max(0, std::min(sliceX, maxSliceX));
-            sliceY = std::max(0, std::min(sliceY, maxSliceY));
+              // Get slice index with bounds checking
+              int maxSlice = phaseNumCells[idx] - 1;
+              sliceIndices[d] = std::max(0, std::min(this->PhysicalSliceIndices[d], maxSlice));
+            }
 
-            // Cell bounds from pre-computed vertex positions
-            double cellXMin = physVertexX[sliceX];
-            double cellXMax = physVertexX[sliceX + 1];
-            double cellYMin = physVertexY[sliceY];
-            double cellYMax = physVertexY[sliceY + 1];
+            // Compute total nodes per physical cell and decompose node index
+            int physNodesPerCell = PSComputeTotalNodes(physOrders);
+            std::vector<int> physNodesPerDim(numPhysDims);
+            for (int d = 0; d < numPhysDims; ++d)
+            {
+              physNodesPerDim[d] = physOrders[d] + 1;
+            }
 
-            // Node position within cell (row-major: nodeX * nodesY + nodeY)
             int physNodeIdx = this->PhysicalNodeIndex;
-            int maxNodeIdx = physNodesX * physNodesY - 1;
+            int maxNodeIdx = physNodesPerCell - 1;
             physNodeIdx = std::max(0, std::min(physNodeIdx, maxNodeIdx));
 
-            int nodeX = physNodeIdx / physNodesY;
-            int nodeY = physNodeIdx % physNodesY;
+            // Decompose node index into per-dimension indices
+            std::vector<int> nodeIndices = PSDecomposeIndex(physNodeIdx, physNodesPerDim);
 
-            double xi = gllPhysX[nodeX];
-            double eta = gllPhysY[nodeY];
-            double probeX = cellXMin + (xi + 1.0) * 0.5 * (cellXMax - cellXMin);
-            double probeY = cellYMin + (eta + 1.0) * 0.5 * (cellYMax - cellYMin);
+            // Compute probe position (VTK always uses 3D coordinates)
+            double probePos[3] = {0.0, 0.0, 0.0};
+            for (int d = 0; d < numPhysDims; ++d)
+            {
+              double cellMin = physVertices[d][sliceIndices[d]];
+              double cellMax = physVertices[d][sliceIndices[d] + 1];
+              double xi = physGLL[d][nodeIndices[d]];
+              probePos[d] = cellMin + (xi + 1.0) * 0.5 * (cellMax - cellMin);
+            }
 
             // Create probe point
             vtkNew<vtkPoints> probePoints;
-            probePoints->InsertNextPoint(probeX, probeY, 0.0);
+            probePoints->InsertNextPoint(probePos[0], probePos[1], probePos[2]);
 
             vtkNew<vtkCellArray> probeVerts;
             vtkIdType ptId = 0;
@@ -1260,10 +1626,11 @@ int vtkWARPMPhaseSpaceReader::RequestData(
             std::vector<hsize_t> start(varNdims, 0);
             std::vector<hsize_t> count(varNdims);
 
-            for (size_t i = 0; i < physDimIndices.size() && i < 2; ++i)
+            // Set hyperslab for physical dimensions (slice to single cell)
+            for (size_t i = 0; i < physDimIndices.size() && i < 3; ++i)
             {
               int idx = physDimIndices[i];
-              int sliceVal = (i == 0) ? this->PhysicalSliceIndices[0] : this->PhysicalSliceIndices[1];
+              int sliceVal = this->PhysicalSliceIndices[i];
               int maxVal = static_cast<int>(varDims[idx]) - 1;
               if (sliceVal < 0 || sliceVal > maxVal)
               {
@@ -1336,30 +1703,33 @@ int vtkWARPMPhaseSpaceReader::RequestData(
             int fullNodesPerElem = nodesPerElem;
             int velNodesActual = fullNodesPerElem / physNodesPerElem;
 
-            for (int vey = 0; vey < velNy; ++vey)
+            // Generalized N-dimensional data loading loop
+            for (int cellIdx = 0; cellIdx < velTotalCells; ++cellIdx)
             {
-              for (int vex = 0; vex < velNx; ++vex)
+              // Decompose cell index into per-dimension indices
+              std::vector<int> cellIndices = PSDecomposeIndex(cellIdx, velNumCellsVec);
+
+              int velElemStartIdx = cellIdx * velNodesPerElement;
+
+              for (int nodeIdx = 0; nodeIdx < velNodesPerElement; ++nodeIdx)
               {
-                int velElemStartIdx = (vey * velNx + vex) * velNodesPerElement;
+                // Decompose node index into per-dimension indices
+                std::vector<int> nodeIndices = PSDecomposeIndex(nodeIdx, velNodesPerDim);
 
-                for (int vix = 0; vix < velNodesX; ++vix)
+                int velVtkLocalIdx = velWarpmToVTK[nodeIdx];
+                int vtkPointIdx = velElemStartIdx + velVtkLocalIdx;
+
+                // Compute flat data index (row-major order in HDF5 data)
+                // Data layout: velocity cells are in row-major order (last dim varies fastest)
+                int velCellFlatIdx = PSComputeFlatIndex(cellIndices, velNumCellsVec);
+                int fullNodeIdx = physNodeIdx * velNodesActual + nodeIdx;
+                int dataIdx = (velCellFlatIdx * fullNodesPerElem + fullNodeIdx) * numComponents;
+
+                for (int c = 0; c < numComponents; ++c)
                 {
-                  for (int viy = 0; viy < velNodesY; ++viy)
+                  if (dataIdx + c < static_cast<int>(slicedData.size()))
                   {
-                    int velWarpmLocalIdx = vix * velNodesY + viy;
-                    int velVtkLocalIdx = velWarpmToVTK[velWarpmLocalIdx];
-                    int vtkPointIdx = velElemStartIdx + velVtkLocalIdx;
-
-                    int fullNodeIdx = physNodeIdx * velNodesActual + velWarpmLocalIdx;
-                    int dataIdx = ((vex * velNy + vey) * fullNodesPerElem + fullNodeIdx) * numComponents;
-
-                    for (int c = 0; c < numComponents; ++c)
-                    {
-                      if (dataIdx + c < static_cast<int>(slicedData.size()))
-                      {
-                        velFieldArrays[c]->SetValue(vtkPointIdx, slicedData[dataIdx + c]);
-                      }
-                    }
+                    velFieldArrays[c]->SetValue(vtkPointIdx, slicedData[dataIdx + c]);
                   }
                 }
               }
@@ -1380,6 +1750,36 @@ int vtkWARPMPhaseSpaceReader::RequestData(
   if (domainsGroup >= 0) H5Gclose(domainsGroup);
   H5Gclose(varsGroup);
   H5Fclose(file);
+
+  // Debug: final state of all outputs
+  {
+    std::ofstream debugFile("/tmp/_warpm_debug.txt", std::ios::app);
+    debugFile << "=== Final output state ===\n";
+
+    for (int port = 0; port < 3; ++port)
+    {
+      vtkInformation* info = outputVector->GetInformationObject(port);
+      if (info)
+      {
+        vtkDataObject* obj = info->Get(vtkDataObject::DATA_OBJECT());
+        debugFile << "Port " << port << ": ptr=" << obj;
+        if (obj)
+        {
+          vtkDataSet* ds = vtkDataSet::SafeDownCast(obj);
+          if (ds)
+          {
+            double bounds[6];
+            ds->GetBounds(bounds);
+            debugFile << ", pts=" << ds->GetNumberOfPoints()
+                      << ", cells=" << ds->GetNumberOfCells()
+                      << ", bounds=[" << bounds[0] << "," << bounds[1] << "]x["
+                      << bounds[2] << "," << bounds[3] << "]";
+          }
+        }
+        debugFile << "\n";
+      }
+    }
+  }
 
   return 1;
 }

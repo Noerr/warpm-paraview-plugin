@@ -38,10 +38,13 @@ public:
   ///@{
   /**
    * Physical slice indices for phase space variables.
-   * Specifies which cell in the physical dimensions to extract.
+   * Specifies which cell in each physical dimension to extract.
+   * For 1D physical data, only index 0 is used.
+   * For 2D physical data, indices 0 and 1 are used.
+   * For 3D physical data, all three indices are used.
    */
-  vtkGetVector2Macro(PhysicalSliceIndices, int);
-  vtkSetVector2Macro(PhysicalSliceIndices, int);
+  vtkGetVector3Macro(PhysicalSliceIndices, int);
+  vtkSetVector3Macro(PhysicalSliceIndices, int);
   ///@}
 
   ///@{
@@ -68,7 +71,7 @@ protected:
   int FillOutputPortInformation(int port, vtkInformation* info) override;
 
   // Phase space slice properties
-  int PhysicalSliceIndices[2];
+  int PhysicalSliceIndices[3];
   int PhysicalNodeIndex;
 
   // Phase space detection (set in RequestInformation)

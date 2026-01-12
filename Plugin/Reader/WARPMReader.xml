@@ -129,14 +129,15 @@
       <!-- Phase space slice properties (affect Velocity Space output only) -->
       <IntVectorProperty name="PhysicalSliceIndices"
                          command="SetPhysicalSliceIndices"
-                         number_of_elements="2"
-                         default_values="0 0"
+                         number_of_elements="3"
+                         default_values="0 0 0"
                          label="Physical Slice Indices">
         <IntRangeDomain name="range" min="0" />
         <Documentation>
-          Cell indices in physical dimensions (x, y) for slicing phase space data.
+          Cell indices in physical dimensions (x, y, z) for slicing phase space data.
           Specifies which cell in the physical mesh to extract velocity data from.
           Only affects the Velocity Space output (Port 1).
+          For 1D or 2D physical data, only the relevant indices are used.
         </Documentation>
       </IntVectorProperty>
 
