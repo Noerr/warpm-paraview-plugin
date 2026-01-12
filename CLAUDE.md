@@ -397,6 +397,24 @@ Implementation includes:
 
 Tested configurations: 1D+2V, 2D+2V, 2D+3V phase space files, plus 1D and 2D physical-only files
 
+### Phase 9: Code Refactoring [COMPLETE ✓]
+Eliminated code duplication between base reader and phase space reader:
+
+**Helper functions moved to base class** (protected static methods):
+- HDF5 attribute readers: `ReadIntAttribute`, `ReadStringAttribute`, `ReadStringArrayAttribute`, etc.
+- Domain analysis: `IsPhysicalOnlyDomain`, `IsVariableOnPhysicalDomain`, `DetectPhaseSpaceDomain`
+- File validation: `IsWarpmHDF5File`, `HasPhaseSpaceVariables`, `ResolveWARPMFile`
+- Coordinate/mesh: `ComputeVertexPositions`, `GetGLLNodes`, `BuildLagrangeMesh`
+- N-dimensional helpers: `DecomposeIndex`, `ComputeFlatIndex`, `ComputeTotalNodes`, `GetLagrangeCellType`
+- Node ordering: `BuildWarpmToVTKMapping`, `BuildWarpmToVTKMapping1D/2D/3D`
+
+**Shared `BuildLagrangeMesh()` helper**:
+- Encapsulates common mesh building logic (GLL nodes, node mapping, point/cell creation)
+- Used by both readers for physical mesh and velocity mesh construction
+- Reduces ~150 lines of duplicated nested loops to single function calls
+
+**Code reduction**: Net -450 lines (from ~1900 to ~1450 total across both readers)
+
 ## Test Data
 
 ```
