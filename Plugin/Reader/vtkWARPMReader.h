@@ -121,8 +121,8 @@ protected:
   bool GeometryCached = false;
 
   // Cached mesh parameters for validation
-  int CachedNx = 0;
-  int CachedNy = 0;
+  int CachedNdims = 0;
+  std::vector<int> CachedDataDims;      // Number of cells in each dimension
   int CachedNodesPerElement = 0;
   std::vector<int> CachedWarpmToVTK;
 
