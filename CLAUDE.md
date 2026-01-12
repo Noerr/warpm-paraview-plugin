@@ -433,7 +433,25 @@ Added native multi-file time series support for the base reader:
 | Reader | Multi-file selection | .warpm files |
 |--------|---------------------|--------------|
 | WARPMReader | ✓ (via FileSeriesReader) | ✓ |
-| WARPMPhaseSpaceReader | ✗ (multi-port limitation) | ✓ |
+| WARPMPhaseSpaceReader | ✓ (via custom subclass) | ✓ |
+
+### Phase 11: Multi-Port File Series Support [COMPLETE ✓]
+Extended file series support to the phase space reader (3 output ports):
+
+**Problem**: `vtkFileSeriesReader` hardcodes `SetNumberOfOutputPorts(1)` in its constructor,
+causing crashes when wrapping multi-output-port readers.
+
+**Solution**: Created `vtkWARPMPhaseSpaceFileSeriesReader` - a minimal subclass that only
+overrides the constructor to set 3 output ports. The rest of `vtkFileSeriesReader` is
+already generic with respect to output count.
+
+**Reference**: [ParaView Discourse discussion](https://discourse.paraview.org/t/file-series-support-for-custom-time-unaware-plugin/15566)
+
+**Files added**:
+- `vtkWARPMPhaseSpaceFileSeriesReader.h` - Header (minimal, ~30 lines)
+- `vtkWARPMPhaseSpaceFileSeriesReader.cxx` - Implementation (just constructor override)
+
+**Dependencies added**: `ParaView::VTKExtensionsIOCore` in vtk.module
 
 ## Test Data
 
