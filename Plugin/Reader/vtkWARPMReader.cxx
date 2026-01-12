@@ -1463,33 +1463,17 @@ int vtkWARPMReader::RequestData(
     // Fill field data (using cached mapping and N-dimensional iteration)
     for (int cellIdx = 0; cellIdx < totalCells; ++cellIdx)
     {
-      // Decompose cell index into per-dimension indices
-      std::vector<int> cellIndices = DecomposeIndex(cellIdx, dataDims);
-
-      // Compute reversed cell indices for WARPM data ordering
-      // WARPM stores data with first dimension varying slowest (row-major)
-      std::vector<int> reversedCellIndices(ndims);
-      for (int d = 0; d < ndims; ++d)
-      {
-        reversedCellIndices[d] = cellIndices[ndims - 1 - d];
-      }
-      // Reversed dataDims for computing WARPM flat index
-      std::vector<int> reversedDataDims(ndims);
-      for (int d = 0; d < ndims; ++d)
-      {
-        reversedDataDims[d] = dataDims[ndims - 1 - d];
-      }
-      int warpmCellIdx = ComputeFlatIndex(reversedCellIndices, reversedDataDims);
-
       int elemStartIdx = cellIdx * nodesPerElement;
 
       // Iterate over nodes within this cell
+      // WARPM data is stored with first dimension varying slowest (row-major),
+      // matching our cellIdx iteration order, so we use cellIdx directly
       for (int nodeIdx = 0; nodeIdx < nodesPerElement; ++nodeIdx)
       {
         int vtkLocalIdx = this->CachedWarpmToVTK[nodeIdx];
         int vtkPointIdx = elemStartIdx + vtkLocalIdx;
 
-        int warpmDataIdx = (warpmCellIdx * nodesPerElement + nodeIdx) * varNumComponents;
+        int warpmDataIdx = (cellIdx * nodesPerElement + nodeIdx) * varNumComponents;
         for (int c = 0; c < varNumComponents; ++c)
         {
           fieldArrays[c]->SetValue(vtkPointIdx, data[warpmDataIdx + c]);
