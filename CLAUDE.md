@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **WARPM ParaView Reader Plugin**
 
-A C++ ParaView reader plugin that loads native WARPM HDF5 simulation output with high-order Lagrange element support. Users access time series data via a `.warpm` metadata file.
+A C++ ParaView reader plugin that loads native WARPM HDF5 simulation output with high-order Lagrange element support. Time series can be loaded by selecting multiple .h5 files or via `.warpm` metadata files.
 
 ### Goals
 1. Eliminate the need for Python-based HDF5-to-VTK conversion
@@ -414,6 +414,26 @@ Eliminated code duplication between base reader and phase space reader:
 - Reduces ~150 lines of duplicated nested loops to single function calls
 
 **Code reduction**: Net -450 lines (from ~1900 to ~1450 total across both readers)
+
+### Phase 10: File Series Support [COMPLETE ✓]
+Added native multi-file time series support for the base reader:
+
+**vtkFileSeriesReader integration** (WARPMReader.xml):
+- Base reader now wrapped with `vtkFileSeriesReader` using `vtkSIMetaReaderProxy` pattern
+- `internal_sources` proxy group contains core reader (`WARPMReaderCore`)
+- `sources` proxy group exposes wrapped reader with file series capabilities
+- Users can select multiple .h5 files in ParaView's Open dialog for automatic time series
+
+**Multi-output port limitation**:
+- Phase space reader NOT wrapped (3 output ports incompatible with `vtkFileSeriesReader`)
+- Phase space time series still require `.warpm` metadata files
+- Added documentation noting this ParaView limitation
+
+**Time series support summary**:
+| Reader | Multi-file selection | .warpm files |
+|--------|---------------------|--------------|
+| WARPMReader | ✓ (via FileSeriesReader) | ✓ |
+| WARPMPhaseSpaceReader | ✗ (multi-port limitation) | ✓ |
 
 ## Test Data
 
