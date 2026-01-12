@@ -75,7 +75,7 @@ protected:
   int PhysicalNodeIndex;
 
   // Phase space detection (set in RequestInformation)
-  bool HasPhaseSpaceVariables;
+  bool FileHasPhaseSpace;
   int NumPhysicalDims;
   int NumVelocityDims;
   std::string PhaseSpaceDomainName;

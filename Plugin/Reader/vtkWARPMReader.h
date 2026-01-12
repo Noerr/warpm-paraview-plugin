@@ -19,6 +19,12 @@
 #include <vtkUnstructuredGridAlgorithm.h>
 #include <vtkSmartPointer.h>
 
+// Forward declaration of hid_t for protected helper method signatures.
+// The actual HDF5 header is included in the .cxx files.
+#ifndef H5public_H
+#include <cstdint>
+using hid_t = int64_t;
+#endif
 #include <string>
 #include <vector>
 
@@ -128,6 +134,73 @@ protected:
 
   // Variable (point array) selection
   vtkSmartPointer<vtkDataArraySelection> PointDataArraySelection;
+
+  ///@{
+  /**
+   * HDF5 attribute reading helpers.
+   * These read attributes from HDF5 objects and return true on success.
+   */
+  static bool ReadIntAttribute(hid_t loc, const char* name, int& value);
+  static bool ReadIntArrayAttribute(hid_t loc, const char* name, std::vector<int>& values);
+  static bool ReadDoubleAttribute(hid_t loc, const char* name, double& value);
+  static bool ReadStringAttribute(hid_t loc, const char* name, std::string& value);
+  static bool ReadStringArrayAttribute(hid_t loc, const char* name, std::vector<std::string>& values);
+  ///@}
+
+  ///@{
+  /**
+   * Domain analysis helpers.
+   */
+  static bool IsPhysicalOnlyDomain(hid_t domainGroup);
+  static bool IsVariableOnPhysicalDomain(hid_t file, hid_t varGroup);
+  static bool DetectPhaseSpaceDomain(hid_t domainGroup, int& numPhysical, int& numVelocity,
+                                     std::vector<std::string>& coordNames);
+  ///@}
+
+  ///@{
+  /**
+   * File validation helpers.
+   */
+  static bool IsWarpmHDF5File(const char* fname);
+  static bool HasPhaseSpaceVariables(const char* fname);
+  /**
+   * Resolve a .h5 or .warpm file to its underlying HDF5 path.
+   * For .h5 files, validates WARPM structure and returns the path.
+   * For .warpm files, parses to find the first .h5 and validates it.
+   * Returns empty string if file is invalid or not a WARPM file.
+   */
+  static std::string ResolveWARPMFile(const char* fname);
+  ///@}
+
+  ///@{
+  /**
+   * Coordinate and mesh computation helpers.
+   */
+  static std::vector<double> ComputeVertexPositions(const std::string& expression,
+                                                    int startIndex, int numCells);
+  static std::vector<double> GetGLLNodes(int order);
+  ///@}
+
+  ///@{
+  /**
+   * N-dimensional index helpers.
+   */
+  static std::vector<int> DecomposeIndex(int flatIdx, const std::vector<int>& sizes);
+  static int ComputeFlatIndex(const std::vector<int>& indices, const std::vector<int>& sizes);
+  static int ComputeTotalNodes(const std::vector<int>& orders);
+  static int GetLagrangeCellType(int ndims);
+  ///@}
+
+  ///@{
+  /**
+   * WARPM-to-VTK node ordering mapping builders.
+   * These convert from WARPM's row-major tensor ordering to VTK Lagrange ordering.
+   */
+  static std::vector<int> BuildWarpmToVTKMapping(const std::vector<int>& orders);
+  static std::vector<int> BuildWarpmToVTKMapping1D(int order);
+  static std::vector<int> BuildWarpmToVTKMapping2D(int orderX, int orderY);
+  static std::vector<int> BuildWarpmToVTKMapping3D(int orderX, int orderY, int orderZ);
+  ///@}
 
 private:
   vtkWARPMReader(const vtkWARPMReader&) = delete;

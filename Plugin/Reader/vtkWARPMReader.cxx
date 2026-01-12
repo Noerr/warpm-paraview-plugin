@@ -37,8 +37,10 @@
 vtkStandardNewMacro(vtkWARPMReader);
 
 //----------------------------------------------------------------------------
-// Helper to read a scalar integer attribute
-static bool ReadIntAttribute(hid_t loc, const char* name, int& value)
+// HDF5 Attribute Reading Helpers
+//----------------------------------------------------------------------------
+
+bool vtkWARPMReader::ReadIntAttribute(hid_t loc, const char* name, int& value)
 {
   hid_t attr = H5Aopen(loc, name, H5P_DEFAULT);
   if (attr < 0) return false;
@@ -47,8 +49,7 @@ static bool ReadIntAttribute(hid_t loc, const char* name, int& value)
   return status >= 0;
 }
 
-// Helper to read an integer array attribute
-static bool ReadIntArrayAttribute(hid_t loc, const char* name, std::vector<int>& values)
+bool vtkWARPMReader::ReadIntArrayAttribute(hid_t loc, const char* name, std::vector<int>& values)
 {
   hid_t attr = H5Aopen(loc, name, H5P_DEFAULT);
   if (attr < 0) return false;
@@ -71,8 +72,7 @@ static bool ReadIntArrayAttribute(hid_t loc, const char* name, std::vector<int>&
   return status >= 0;
 }
 
-// Helper to read a scalar double attribute
-static bool ReadDoubleAttribute(hid_t loc, const char* name, double& value)
+bool vtkWARPMReader::ReadDoubleAttribute(hid_t loc, const char* name, double& value)
 {
   hid_t attr = H5Aopen(loc, name, H5P_DEFAULT);
   if (attr < 0) return false;
@@ -81,8 +81,7 @@ static bool ReadDoubleAttribute(hid_t loc, const char* name, double& value)
   return status >= 0;
 }
 
-// Helper to read a string attribute
-static bool ReadStringAttribute(hid_t loc, const char* name, std::string& value)
+bool vtkWARPMReader::ReadStringAttribute(hid_t loc, const char* name, std::string& value)
 {
   hid_t attr = H5Aopen(loc, name, H5P_DEFAULT);
   if (attr < 0) return false;
@@ -113,8 +112,7 @@ static bool ReadStringAttribute(hid_t loc, const char* name, std::string& value)
   return true;
 }
 
-// Helper to read a string array attribute
-static bool ReadStringArrayAttribute(hid_t loc, const char* name, std::vector<std::string>& values)
+bool vtkWARPMReader::ReadStringArrayAttribute(hid_t loc, const char* name, std::vector<std::string>& values)
 {
   hid_t attr = H5Aopen(loc, name, H5P_DEFAULT);
   if (attr < 0) return false;
@@ -147,9 +145,11 @@ static bool ReadStringArrayAttribute(hid_t loc, const char* name, std::vector<st
   return true;
 }
 
-// Check if a domain is physical-only (no velocity dimensions)
-// Velocity dimensions have coordinate names starting with 'v' or 'w'
-static bool IsPhysicalOnlyDomain(hid_t domainGroup)
+//----------------------------------------------------------------------------
+// Domain Analysis Helpers
+//----------------------------------------------------------------------------
+
+bool vtkWARPMReader::IsPhysicalOnlyDomain(hid_t domainGroup)
 {
   std::vector<std::string> coordNames;
   if (!ReadStringArrayAttribute(domainGroup, "CoordinateNames", coordNames))
@@ -168,8 +168,7 @@ static bool IsPhysicalOnlyDomain(hid_t domainGroup)
   return true; // All coordinates are physical (x, y, z, etc.)
 }
 
-// Check if a variable's domain is physical-only
-static bool IsVariableOnPhysicalDomain(hid_t file, hid_t varGroup)
+bool vtkWARPMReader::IsVariableOnPhysicalDomain(hid_t file, hid_t varGroup)
 {
   std::string domainName;
   if (!ReadStringAttribute(varGroup, "OnDomain", domainName))
@@ -184,6 +183,38 @@ static bool IsVariableOnPhysicalDomain(hid_t file, hid_t varGroup)
   bool isPhysical = IsPhysicalOnlyDomain(domGroup);
   H5Gclose(domGroup);
   return isPhysical;
+}
+
+bool vtkWARPMReader::DetectPhaseSpaceDomain(hid_t domainGroup, int& numPhysical, int& numVelocity,
+                                            std::vector<std::string>& coordNames)
+{
+  numPhysical = 0;
+  numVelocity = 0;
+  coordNames.clear();
+
+  if (!ReadStringArrayAttribute(domainGroup, "CoordinateNames", coordNames))
+  {
+    int ndims = 0;
+    if (ReadIntAttribute(domainGroup, "ndims", ndims))
+    {
+      numPhysical = ndims;
+    }
+    return false;
+  }
+
+  for (const auto& name : coordNames)
+  {
+    if (!name.empty() && (name[0] == 'v' || name[0] == 'w'))
+    {
+      ++numVelocity;
+    }
+    else
+    {
+      ++numPhysical;
+    }
+  }
+
+  return numVelocity > 0;
 }
 
 //----------------------------------------------------------------------------
@@ -206,13 +237,11 @@ static bool IsVariableOnPhysicalDomain(hid_t file, hid_t varGroup)
 // We use numpy for vectorized evaluation - single Python call for all vertices.
 //----------------------------------------------------------------------------
 
-// Compute all vertex positions for a dimension by evaluating the coordinate
-// expression using numpy vectorization. Returns positions for vertices at
-// k = startIndex, startIndex+1, ..., startIndex+numCells (numCells+1 values).
-//
-// Uses string-based communication with Python to avoid linking against Python directly.
-// The result is passed back as a comma-separated string in a global variable.
-static std::vector<double> ComputeVertexPositions(
+//----------------------------------------------------------------------------
+// Coordinate and Mesh Computation Helpers
+//----------------------------------------------------------------------------
+
+std::vector<double> vtkWARPMReader::ComputeVertexPositions(
   const std::string& expr, int startIndex, int numCells)
 {
   int numVertices = numCells + 1;
@@ -295,7 +324,7 @@ static std::vector<double> ComputeVertexPositions(
 }
 
 // Gauss-Lobatto-Legendre nodes on [-1, 1] for orders 1-8
-static std::vector<double> GetGLLNodes(int order)
+std::vector<double> vtkWARPMReader::GetGLLNodes(int order)
 {
   std::vector<double> nodes;
   switch (order) {
@@ -343,7 +372,7 @@ static std::vector<double> GetGLLNodes(int order)
 // WARPM: row-major tensor product (y varies fastest, then x)
 //   linear index = x * nodesY + y
 // VTK Lagrange: corners, then edges (ccw), then interior (row-major)
-static std::vector<int> BuildWarpmToVTKLagrangeMapping(int orderX, int orderY)
+std::vector<int> vtkWARPMReader::BuildWarpmToVTKMapping2D(int orderX, int orderY)
 {
   int nodesX = orderX + 1;
   int nodesY = orderY + 1;
@@ -402,7 +431,7 @@ static std::vector<int> BuildWarpmToVTKLagrangeMapping(int orderX, int orderY)
 //----------------------------------------------------------------------------
 
 // Build mapping from WARPM to VTK Lagrange for 1D elements (curves)
-static std::vector<int> BuildWarpmToVTKLagrangeMapping1D(int order)
+std::vector<int> vtkWARPMReader::BuildWarpmToVTKMapping1D(int order)
 {
   int numNodes = order + 1;
   std::vector<int> mapping(numNodes, -1);
@@ -422,7 +451,7 @@ static std::vector<int> BuildWarpmToVTKLagrangeMapping1D(int order)
 }
 
 // Build mapping from WARPM to VTK Lagrange for 3D elements (hexahedra)
-static std::vector<int> BuildWarpmToVTKLagrangeMapping3D(int orderX, int orderY, int orderZ)
+std::vector<int> vtkWARPMReader::BuildWarpmToVTKMapping3D(int orderX, int orderY, int orderZ)
 {
   int nodesX = orderX + 1;
   int nodesY = orderY + 1;
@@ -500,23 +529,23 @@ static std::vector<int> BuildWarpmToVTKLagrangeMapping3D(int orderX, int orderY,
 }
 
 // Dispatcher for building WARPM-to-VTK mapping based on dimension count
-static std::vector<int> BuildWarpmToVTKMapping(const std::vector<int>& orders)
+std::vector<int> vtkWARPMReader::BuildWarpmToVTKMapping(const std::vector<int>& orders)
 {
   switch (orders.size())
   {
     case 1:
-      return BuildWarpmToVTKLagrangeMapping1D(orders[0]);
+      return BuildWarpmToVTKMapping1D(orders[0]);
     case 2:
-      return BuildWarpmToVTKLagrangeMapping(orders[0], orders[1]);
+      return BuildWarpmToVTKMapping2D(orders[0], orders[1]);
     case 3:
-      return BuildWarpmToVTKLagrangeMapping3D(orders[0], orders[1], orders[2]);
+      return BuildWarpmToVTKMapping3D(orders[0], orders[1], orders[2]);
     default:
       return std::vector<int>();
   }
 }
 
 // Get VTK Lagrange cell type for given number of dimensions
-static int GetLagrangeCellType(int ndims)
+int vtkWARPMReader::GetLagrangeCellType(int ndims)
 {
   switch (ndims)
   {
@@ -528,7 +557,7 @@ static int GetLagrangeCellType(int ndims)
 }
 
 // Decompose a flat index into N-dimensional indices (row-major, last dim fastest)
-static std::vector<int> DecomposeIndex(int flatIdx, const std::vector<int>& sizes)
+std::vector<int> vtkWARPMReader::DecomposeIndex(int flatIdx, const std::vector<int>& sizes)
 {
   std::vector<int> indices(sizes.size());
   for (int d = static_cast<int>(sizes.size()) - 1; d >= 0; --d)
@@ -540,7 +569,7 @@ static std::vector<int> DecomposeIndex(int flatIdx, const std::vector<int>& size
 }
 
 // Compute flat index from N-dimensional indices (row-major, last dim fastest)
-static int ComputeFlatIndex(const std::vector<int>& indices, const std::vector<int>& sizes)
+int vtkWARPMReader::ComputeFlatIndex(const std::vector<int>& indices, const std::vector<int>& sizes)
 {
   int flatIdx = 0;
   for (size_t d = 0; d < indices.size(); ++d)
@@ -551,7 +580,7 @@ static int ComputeFlatIndex(const std::vector<int>& indices, const std::vector<i
 }
 
 // Compute total nodes for an N-dimensional element with given orders
-static int ComputeTotalNodes(const std::vector<int>& orders)
+int vtkWARPMReader::ComputeTotalNodes(const std::vector<int>& orders)
 {
   int total = 1;
   for (int o : orders)
@@ -585,9 +614,12 @@ int vtkWARPMReader::FillOutputPortInformation(int port, vtkInformation* info)
 }
 
 //----------------------------------------------------------------------------
-// Static helper: Check if an HDF5 file has any phase space variables
+// File Validation Helpers
+//----------------------------------------------------------------------------
+
+// Check if an HDF5 file has any phase space variables
 // (variables on domains with velocity coordinates starting with 'v' or 'w')
-static bool HasPhaseSpaceVariables(const char* fname)
+bool vtkWARPMReader::HasPhaseSpaceVariables(const char* fname)
 {
   hid_t file = H5Fopen(fname, H5F_ACC_RDONLY, H5P_DEFAULT);
   if (file < 0) return false;
@@ -649,9 +681,8 @@ static bool HasPhaseSpaceVariables(const char* fname)
   return hasPhaseSpace;
 }
 
-//----------------------------------------------------------------------------
-// Static helper: Check if an HDF5 file has WARPM structure
-static bool IsWarpmHDF5File(const char* fname)
+// Check if an HDF5 file has WARPM structure
+bool vtkWARPMReader::IsWarpmHDF5File(const char* fname)
 {
   hid_t file = H5Fopen(fname, H5F_ACC_RDONLY, H5P_DEFAULT);
   if (file < 0)
@@ -697,11 +728,11 @@ static bool IsWarpmHDF5File(const char* fname)
 }
 
 //----------------------------------------------------------------------------
-int vtkWARPMReader::CanReadFile(const char* fname)
+std::string vtkWARPMReader::ResolveWARPMFile(const char* fname)
 {
   if (!fname || strlen(fname) == 0)
   {
-    return 0;
+    return "";
   }
 
   std::filesystem::path filePath(fname);
@@ -710,13 +741,8 @@ int vtkWARPMReader::CanReadFile(const char* fname)
 
   if (ext == ".h5" || ext == ".hdf5")
   {
-    // Direct HDF5 file - check for WARPM structure
-    // Return false if file has phase space variables (use WARPMPhaseSpaceReader instead)
-    if (!IsWarpmHDF5File(fname))
-    {
-      return 0;
-    }
-    return HasPhaseSpaceVariables(fname) ? 0 : 1;
+    // Direct HDF5 file - validate WARPM structure
+    return IsWarpmHDF5File(fname) ? fname : "";
   }
   else if (ext == ".warpm")
   {
@@ -730,7 +756,7 @@ int vtkWARPMReader::CanReadFile(const char* fname)
     std::ifstream file(fname);
     if (!file.is_open())
     {
-      return 0;
+      return "";
     }
 
     std::string line;
@@ -771,12 +797,7 @@ int vtkWARPMReader::CanReadFile(const char* fname)
                 {
                   // Found a matching file - validate it
                   std::string h5path = entry.path().string();
-                  if (!IsWarpmHDF5File(h5path.c_str()))
-                  {
-                    return 0;
-                  }
-                  // Return false if file has phase space variables
-                  return HasPhaseSpaceVariables(h5path.c_str()) ? 0 : 1;
+                  return IsWarpmHDF5File(h5path.c_str()) ? h5path : "";
                 }
               }
             }
@@ -790,20 +811,25 @@ int vtkWARPMReader::CanReadFile(const char* fname)
         if (std::filesystem::exists(framePath))
         {
           std::string h5path = framePath.string();
-          if (!IsWarpmHDF5File(h5path.c_str()))
-          {
-            return 0;
-          }
-          // Return false if file has phase space variables
-          return HasPhaseSpaceVariables(h5path.c_str()) ? 0 : 1;
+          return IsWarpmHDF5File(h5path.c_str()) ? h5path : "";
         }
       }
     }
-
-    return 0; // No valid H5 file found
   }
 
-  return 0; // Unknown extension
+  return ""; // Unknown extension or no valid H5 file found
+}
+
+//----------------------------------------------------------------------------
+int vtkWARPMReader::CanReadFile(const char* fname)
+{
+  std::string h5path = ResolveWARPMFile(fname);
+  if (h5path.empty())
+  {
+    return 0;
+  }
+  // Base reader handles files WITHOUT phase space variables
+  return HasPhaseSpaceVariables(h5path.c_str()) ? 0 : 1;
 }
 
 //----------------------------------------------------------------------------
