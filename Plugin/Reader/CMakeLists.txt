@@ -1,6 +1,7 @@
 set(classes
   vtkWARPMReader
-  vtkWARPMPhaseSpaceReader)
+  vtkWARPMPhaseSpaceReader
+  vtkWARPMPhaseSpaceFileSeriesReader)
 
 vtk_module_add_module(WARPMReaderCore
   FORCE_STATIC
