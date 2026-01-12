@@ -36,6 +36,55 @@
       </StringVectorProperty>
     </Proxy>
 
+    <!-- Core Phase Space Reader: Used internally by file series wrapper -->
+    <Proxy class="vtkWARPMPhaseSpaceReader" name="WARPMPhaseSpaceReaderCore">
+      <StringVectorProperty name="FileName"
+                            command="SetFileName"
+                            number_of_elements="1">
+        <FileListDomain name="files"/>
+      </StringVectorProperty>
+
+      <DoubleVectorProperty information_only="1"
+                            name="TimestepValues"
+                            repeatable="1">
+        <TimeStepsInformationHelper />
+      </DoubleVectorProperty>
+
+      <StringVectorProperty name="PointArrayInfo"
+                            information_only="1">
+        <ArraySelectionInformationHelper attribute_name="Point" />
+      </StringVectorProperty>
+
+      <StringVectorProperty name="PointArrayStatus"
+                            command="SetPointArrayStatus"
+                            number_of_elements="2"
+                            repeat_command="1"
+                            number_of_elements_per_command="2"
+                            element_types="2 0"
+                            information_property="PointArrayInfo"
+                            label="Variables">
+        <ArraySelectionDomain name="array_list">
+          <RequiredProperties>
+            <Property name="PointArrayInfo" function="ArrayList" />
+          </RequiredProperties>
+        </ArraySelectionDomain>
+      </StringVectorProperty>
+
+      <IntVectorProperty name="PhysicalSliceIndices"
+                         command="SetPhysicalSliceIndices"
+                         number_of_elements="3"
+                         default_values="0 0 0">
+        <IntRangeDomain name="range" min="0" />
+      </IntVectorProperty>
+
+      <IntVectorProperty name="PhysicalNodeIndex"
+                         command="SetPhysicalNodeIndex"
+                         number_of_elements="1"
+                         default_values="0">
+        <IntRangeDomain name="range" min="0" />
+      </IntVectorProperty>
+    </Proxy>
+
   </ProxyGroup>
 
   <!-- Public reader proxies with file series support -->
@@ -99,11 +148,14 @@
       </Hints>
     </SourceProxy>
 
-    <!-- WARPM Phase Space Reader (direct, no file series wrapper)
-         Multi-output-port readers are not compatible with vtkFileSeriesReader.
-         Use .warpm metadata files for time series with phase space data. -->
+    <!-- WARPM Phase Space Reader with file series support
+         Uses custom vtkWARPMPhaseSpaceFileSeriesReader which subclasses
+         vtkFileSeriesReader with 3 output ports instead of 1.
+         See: https://discourse.paraview.org/t/file-series-support-for-custom-time-unaware-plugin/15566 -->
     <SourceProxy name="WARPMPhaseSpaceReader"
-                 class="vtkWARPMPhaseSpaceReader"
+                 class="vtkWARPMPhaseSpaceFileSeriesReader"
+                 si_class="vtkSIMetaReaderProxy"
+                 file_name_method="SetFileName"
                  label="WARPM Phase Space Reader">
       <Documentation long_help="Reads WARPM HDF5 phase space (Vlasov-Maxwell) data with physical and velocity space outputs."
                      short_help="Read WARPM phase space data.">
@@ -118,17 +170,26 @@
 
         Note: This reader only accepts files containing phase space variables.
         For physical-only data, use the standard WARPM Reader.
-        For time series, use .warpm metadata files (multi-file selection not supported
-        for multi-output readers).
       </Documentation>
 
+      <StringVectorProperty name="FileNameInfo"
+                            command="GetCurrentFileName"
+                            information_only="1">
+        <SimpleStringInformationHelper />
+      </StringVectorProperty>
+
       <StringVectorProperty name="FileName"
-                            command="SetFileName"
-                            number_of_elements="1">
+                            animateable="0"
+                            clean_command="RemoveAllFileNames"
+                            command="AddFileName"
+                            information_property="FileNameInfo"
+                            number_of_elements="1"
+                            panel_visibility="never"
+                            repeat_command="1">
         <FileListDomain name="files"/>
         <Documentation>
-          Path to WARPM HDF5 file (.h5) or metadata file (.warpm).
-          For time series, use a .warpm file with glob pattern.
+          Path to WARPM HDF5 file(s) (.h5) or metadata file (.warpm).
+          Select multiple .h5 files for time series.
         </Documentation>
       </StringVectorProperty>
 
@@ -138,39 +199,17 @@
         <TimeStepsInformationHelper />
       </DoubleVectorProperty>
 
-      <StringVectorProperty name="PointArrayInfo"
-                            information_only="1">
-        <ArraySelectionInformationHelper attribute_name="Point" />
-      </StringVectorProperty>
-
-      <StringVectorProperty name="PointArrayStatus"
-                            command="SetPointArrayStatus"
-                            number_of_elements="2"
-                            repeat_command="1"
-                            number_of_elements_per_command="2"
-                            element_types="2 0"
-                            information_property="PointArrayInfo"
-                            label="Variables">
-        <ArraySelectionDomain name="array_list">
-          <RequiredProperties>
-            <Property name="PointArrayInfo" function="ArrayList" />
-          </RequiredProperties>
-        </ArraySelectionDomain>
-      </StringVectorProperty>
-
-      <IntVectorProperty name="PhysicalSliceIndices"
-                         command="SetPhysicalSliceIndices"
-                         number_of_elements="3"
-                         default_values="0 0 0">
-        <IntRangeDomain name="range" min="0" />
-      </IntVectorProperty>
-
-      <IntVectorProperty name="PhysicalNodeIndex"
-                         command="SetPhysicalNodeIndex"
-                         number_of_elements="1"
-                         default_values="0">
-        <IntRangeDomain name="range" min="0" />
-      </IntVectorProperty>
+      <SubProxy>
+        <Proxy name="Reader"
+               proxygroup="internal_sources"
+               proxyname="WARPMPhaseSpaceReaderCore" />
+        <ExposedProperties>
+          <Property name="PointArrayInfo" />
+          <Property name="PointArrayStatus" />
+          <Property name="PhysicalSliceIndices" />
+          <Property name="PhysicalNodeIndex" />
+        </ExposedProperties>
+      </SubProxy>
 
       <PropertyGroup label="Velocity Space Location" panel_visibility="default">
         <Property name="PhysicalSliceIndices" />

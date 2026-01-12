@@ -2,6 +2,7 @@ NAME
   WARPMReaderCore
 DEPENDS
   VTK::CommonExecutionModel
+  ParaView::VTKExtensionsIOCore
 PRIVATE_DEPENDS
   VTK::CommonCore
   VTK::CommonDataModel
