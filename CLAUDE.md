@@ -458,15 +458,25 @@ Extended file series support to the phase space reader (3 output ports):
 **Problem**: `vtkFileSeriesReader` hardcodes `SetNumberOfOutputPorts(1)` in its constructor,
 causing crashes when wrapping multi-output-port readers.
 
-**Solution**: Created `vtkWARPMPhaseSpaceFileSeriesReader` - a minimal subclass that only
-overrides the constructor to set 3 output ports. The rest of `vtkFileSeriesReader` is
-already generic with respect to output count.
+**Solution**: Created `vtkWARPMPhaseSpaceFileSeriesReader` - a subclass that overrides
+`SetReader()` to auto-detect output port count from the internal reader. This approach
+queries `reader->GetNumberOfOutputPorts()` and matches it automatically.
 
-**Reference**: [ParaView Discourse discussion](https://discourse.paraview.org/t/file-series-support-for-custom-time-unaware-plugin/15566)
+**Implementation note**: The `SetReader()` implementation replicates `vtkSetObjectMacro`
+logic inline because the macro-generated function in `vtkMetaReader` has no linkable
+symbol in pre-built ParaView libraries.
+
+**Upstream contribution**: Submitted [ParaView MR !7637](https://gitlab.kitware.com/paraview/paraview/-/merge_requests/7637)
+to add this auto-detection to `vtkFileSeriesReader` itself. Once merged, the plugin can
+simplify to just calling `Superclass::SetReader(reader)`.
+
+**References**:
+- [ParaView Discourse discussion](https://discourse.paraview.org/t/file-series-support-for-custom-time-unaware-plugin/15566)
+- [Feature request post](https://discourse.paraview.org/t/vtkfileseriesreader-multi-output-port-support/17394)
 
 **Files added**:
-- `vtkWARPMPhaseSpaceFileSeriesReader.h` - Header (minimal, ~30 lines)
-- `vtkWARPMPhaseSpaceFileSeriesReader.cxx` - Implementation (just constructor override)
+- `vtkWARPMPhaseSpaceFileSeriesReader.h` - Header with `SetReader()` override
+- `vtkWARPMPhaseSpaceFileSeriesReader.cxx` - Implementation with auto-detect logic
 
 **Dependencies added**: `ParaView::VTKExtensionsIOCore` in vtk.module
 
