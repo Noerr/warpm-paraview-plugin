@@ -39,7 +39,7 @@ Note: `hdf5-mpi` (used by WARPM) is compatible with the build.
 ### Building the Plugin
 
 ```bash
-cd /Users/noah/Documents/warpm/warpm_paraview_plugin
+cd <repo path>/warpm_paraview_plugin
 mkdir build
 cmake -S . -B build -DParaView_DIR=$HOME/Downloads/paraview_localbuild/paraview/build -Wno-dev
 make -C build -j4
@@ -169,6 +169,23 @@ paraview_add_server_manager_xmls(XMLS WARPMReader.xml)
 - Builds velocity-space mesh from phase space domain geometry
 - Uses HDF5 hyperslab selection to efficiently read sliced data
 - Port 2 outputs a single vtkPolyData point showing the slice location in physical space
+
+## Architecture Documentation
+
+For detailed architecture diagrams including class hierarchy, ServerManager proxy architecture, VTK pipeline lifecycle, static method callers, and object lifetime, see [design_docs.md](design_docs.md).
+
+## Optimization Opportunities
+
+Based on the architecture, potential optimization targets:
+
+| Area | Current | Potential Optimization |
+|------|---------|------------------------|
+| **Time value reading** | Opens each .h5 file sequentially in RequestInformation | Parallel reads with thread pool |
+| **Geometry caching** | Cache hit for all frames (mesh static) | Already optimal for time series |
+| **HDF5 file handles** | Open/close file each RequestData call | Keep file handle open between frames |
+| **Expression evaluation** | Python interpreter invoked per dimension | Cache vertex arrays in RequestInformation |
+| **Node reordering mapping** | Recomputed if cache invalidated | Store mapping persistently (rarely changes) |
+| **Field array allocation** | New vtkDoubleArray per variable per frame | Reuse arrays, just update values |
 
 ## Opening WARPM Data
 
@@ -456,13 +473,13 @@ already generic with respect to output count.
 ## Test Data
 
 ```
-/Users/noah/Downloads/test_macos_warpm/
+<warpm test files>
 ├── maxwell_2d.warpm                    # Metadata file for 2D physical-space data
 ├── maxwell_2d_0000.h5                  # 2D physical-space frame files
 ├── maxwell_2d_0001.h5
 ├── ...
 ├── maxwell_2d_0010.h5
-├── Crews_Sheared_Bennett_1d2v_0000.h5  # 1D physical-only test file
+├── physical_vars_1d2v_0000.h5  # 1D physical-only test file
 ├── phase_space_vars_1d2v_0000.h5       # 1D+2V phase space (1D physical, 2D velocity)
 ├── phase_space_vars_2d2v_0000.h5       # 2D+2V phase space (2D physical, 2D velocity)
 └── phase_space_vars_2d3v_0000.h5       # 2D+3V phase space (2D physical, 3D velocity)

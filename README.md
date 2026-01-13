@@ -163,6 +163,12 @@ If a file contains multiple physical domains or multiple phase space domains, on
 
 BSD 3-Clause License. See [LICENSE](LICENSE) for details.
 
+## Documentation
+
+- [README.md](README.md) - This file (usage and build instructions)
+- [CLAUDE.md](CLAUDE.md) - Development guidelines and implementation details
+- [design_docs.md](design_docs.md) - Architecture diagrams (class hierarchy, VTK pipeline lifecycle, object lifetime)
+
 ## Contributing
 
 Contributions welcome! Please open an issue or pull request.
