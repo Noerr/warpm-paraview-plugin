@@ -65,6 +65,33 @@ reader = pv.WARPMReader(FileName='/path/to/file.warpm')
 
 First launch of ParaView from the developer build may require authorization via a macOS security dialog. Until authorized, pvpython may hang on `import vtk`.
 
+### Linux / Client-Server Build (TODO)
+
+For client-server deployments where pvserver runs on Linux and the ParaView client runs on macOS:
+
+**Requirements:**
+- Plugin must be built for **both** platforms (same ParaView version)
+- Server (Linux): Full plugin for data reading
+- Client (macOS): Full plugin for GUI/proxy registration
+
+**Linux build steps:** (to be documented)
+- ParaView source build or use `kitware/paraview_org-plugin-devel` Docker image
+- HDF5 development libraries
+- CMake configuration pointing to ParaView build/install
+
+**Client-server usage:**
+```bash
+# On Linux server
+pvserver --load-plugin=/path/to/WARPMReader.so
+
+# On macOS client - connect and load plugin
+# LoadPlugin('/path/to/WARPMReader.so', remote=True)  # loads on server
+# LoadPlugin('/path/to/WARPMReader.so', remote=False) # loads on client
+```
+
+**Note:** Both client and server typically need the plugin loaded. The server does the
+actual file I/O; the client needs proxy definitions for the GUI.
+
 ## Plugin Architecture
 
 ### File Structure
@@ -479,6 +506,23 @@ simplify to just calling `Superclass::SetReader(reader)`.
 - `vtkWARPMPhaseSpaceFileSeriesReader.cxx` - Implementation with auto-detect logic
 
 **Dependencies added**: `ParaView::VTKExtensionsIOCore` in vtk.module
+
+### File Series Reader Compatibility
+
+**The plugin works with stock ParaView 6.0** - no custom ParaView build required.
+
+The plugin bundles its own `vtkWARPMPhaseSpaceFileSeriesReader` subclass that handles
+multi-output-port file series support. This is self-contained within the plugin.
+
+| Reader | File Series Implementation | Stock ParaView? |
+|--------|---------------------------|-----------------|
+| WARPMReader | Stock `vtkFileSeriesReader` | ✓ Yes |
+| WARPMPhaseSpaceReader | Bundled `vtkWARPMPhaseSpaceFileSeriesReader` | ✓ Yes |
+
+**MR !7637 context**: We contributed the auto-detection feature upstream to ParaView so
+future plugin developers won't need to create their own subclass. Once merged into a
+ParaView release, we could simplify our plugin to use the stock class, but this is
+optional - the current implementation will continue to work.
 
 ## Test Data
 
