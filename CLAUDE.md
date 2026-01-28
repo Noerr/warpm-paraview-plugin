@@ -24,10 +24,19 @@ A C++ ParaView reader plugin that loads native WARPM HDF5 simulation output with
 ~/Downloads/paraview_localbuild/paraview/build/ # Build directory
 ```
 
-**Verified versions** (January 2025):
+**Verified versions:**
+
+*macOS (January 2025):*
 - ParaView 6.0
 - VTK 9.5.2
 - Python 3.14
+- Apple Clang 17.0.0 (arm64)
+
+*Linux/Andes (January 2026):*
+- ParaView 6.0 (master, v6.0.1+)
+- VTK 9.6.0
+- Python 3.12.5
+- GCC 10.3.0
 
 **Homebrew Dependencies**:
 ```bash
@@ -65,31 +74,128 @@ reader = pv.WARPMReader(FileName='/path/to/file.warpm')
 
 First launch of ParaView from the developer build may require authorization via a macOS security dialog. Until authorized, pvpython may hang on `import vtk`.
 
-### Linux / Client-Server Build (TODO)
+### Linux / HPC Build (Andes)
+
+**Environment:** ORNL Andes HPC system using environment modules for software management.
+
+**ParaView Options on Andes:**
+
+| Option | Location | Use Case |
+|--------|----------|----------|
+| System module 6.0.0 | `module load paraview/6.0.0` | Client-server with official 6.0.x client |
+| Local v6.0.0 build | `/ccs/proj/fus147/ParaView_localbuild/paraview_v6.0.0/build` | Plugin development matching system |
+| Local master build | `/ccs/proj/fus147/ParaView_localbuild/paraview_master/build` | Latest features (requires patched client) |
+
+**Recommended for client-server:** Use system ParaView 6.0.0 module with official 6.0.x client on macOS.
+
+#### Building Plugin Against System ParaView 6.0.0
+
+The system module works but has CMake config quirks. We built a local v6.0.0 for reliable plugin builds:
+
+```bash
+# Plugin build against local v6.0.0 (matches system ABI)
+cd /path/to/warpm-paraview-plugin
+cmake -S . -B build_v6.0.0 \
+  -DParaView_DIR=/ccs/proj/fus147/ParaView_localbuild/paraview_v6.0.0/build \
+  -Wno-dev
+make -C build_v6.0.0 -j4
+```
+
+**Output:** `build_v6.0.0/lib64/paraview-6.0/plugins/WARPMReader/WARPMReader.so`
+
+**Testing with system pvpython:**
+```bash
+/sw/andes/paraview/6.0.0/bin/pvpython -c "
+import paraview.simple as pv
+pv.LoadPlugin('/path/to/build_v6.0.0/.../WARPMReader.so', remote=False)
+reader = pv.WARPMReader(FileName='/path/to/file.h5')
+reader.UpdatePipeline()
+print('Points:', pv.servermanager.Fetch(reader).GetNumberOfPoints())
+"
+```
+
+#### Building Plugin Against Master Build
+
+For latest features (requires matching master client with handshake patch):
+
+**Required modules:**
+```bash
+module swap Core Core/25.04
+module load cmake gcc/10.3.0 hdf5 ninja python/3.12.5
+```
+
+**Important:** Each bash command runs in a fresh shell, so modules don't persist. Always chain commands with `&&` or load modules in each command.
+
+**Building the plugin:**
+```bash
+module swap Core Core/25.04 && module load cmake gcc/10.3.0 hdf5 ninja python/3.12.5 && \
+  cd /path/to/warpm-paraview-plugin && \
+  cmake -S . -B build \
+    -DParaView_DIR=/ccs/proj/fus147/ParaView_localbuild/paraview_master/build \
+    -DCMAKE_C_COMPILER=$(which gcc) \
+    -DCMAKE_CXX_COMPILER=$(which g++) \
+    -Wno-dev && \
+  make -C build -j4
+```
+
+**Output:** `build/lib64/paraview-6.0/plugins/WARPMReader/WARPMReader.so`
+
+**Note:** There's a harmless MPI cleanup segfault at pvpython exit (hwloc/opal_finalize issue). This doesn't affect functionality.
+
+#### Local ParaView Build Configuration
+
+Both local builds (v6.0.0 and master) use:
+- Headless (no X, no EGL, no Qt GUI) - suitable for compute nodes without GPU
+- Python 3.12.5
+- MPI enabled (OpenMPI 4.0.4)
+- GCC 9.3.0 for v6.0.0 (matches system), GCC 10.3.0 for master
+
+### Client-Server Deployment
 
 For client-server deployments where pvserver runs on Linux and the ParaView client runs on macOS:
 
 **Requirements:**
-- Plugin must be built for **both** platforms (same ParaView version)
+- Plugin must be built for **both** platforms
+- **Client and server ParaView versions must match** (see Version Compatibility below)
 - Server (Linux): Full plugin for data reading
 - Client (macOS): Full plugin for GUI/proxy registration
 
-**Linux build steps:** (to be documented)
-- ParaView source build or use `kitware/paraview_org-plugin-devel` Docker image
-- HDF5 development libraries
-- CMake configuration pointing to ParaView build/install
+**Version Compatibility (Critical):**
 
-**Client-server usage:**
+| Client | Server | Works? | Notes |
+|--------|--------|--------|-------|
+| Official 6.0.1 | Official 6.0.0 | ✓ Yes | Official releases are compatible within 6.0.x |
+| Official 6.0.0 | Official 6.0.0 | ✓ Yes | Exact match always works |
+| Master build | 6.0.0 | ✗ No | Master has protocol/serialization changes |
+| Master build | Master build | ✓ Yes* | Must apply handshake patch (see below) |
+
+**Master Build Handshake Bug:** Development builds (master) fail client-server handshake due to
+version string format mismatch. The handshake regex expects `MAJOR.MINOR` but dev builds produce
+`MAJOR.MINOR.DATE` (e.g., `6.0.20260127`). See [paraview_handshake_bug_report.md](paraview_handshake_bug_report.md)
+for details and fix.
+
+**Patch for master-to-master connections:**
 ```bash
-# On Linux server
-pvserver --load-plugin=/path/to/WARPMReader.so
+# Apply to BOTH client and server ParaView source trees
+sed -i 's/<< PARAVIEW_VERSION;/<< PARAVIEW_VERSION_SHORT;/g' \
+  Remoting/ServerManager/vtkPVSessionServer.cxx \
+  Remoting/ServerManager/vtkSMSessionClient.cxx
+# Rebuild
+ninja -C build
+```
 
-# On macOS client - connect and load plugin
+**Client-server usage (with system ParaView 6.0.0):**
+```bash
+# On Andes - use system module or local v6.0.0 build
+# System module launches pvserver via ORNL's pvsc scripts
+
+# On macOS client - must use ParaView 6.0.0 (not master!)
+# Connect and load plugin:
 # LoadPlugin('/path/to/WARPMReader.so', remote=True)  # loads on server
 # LoadPlugin('/path/to/WARPMReader.so', remote=False) # loads on client
 ```
 
-**Note:** Both client and server typically need the plugin loaded. The server does the
+**Note:** Both client and server need the plugin loaded. The server does the
 actual file I/O; the client needs proxy definitions for the GUI.
 
 ## Plugin Architecture
@@ -551,7 +657,11 @@ Phase space test files contain:
 | DG node utilities (current) | `../test_files/dg/nodal_dg_utils.py` |
 | DG node utilities (legacy) | `../test_files/dg/nodal_dg_utils_ColumnMajor.py` |
 | Mesh utilities | `../test_files/domains/structured_mesh_utils.py` |
-| ParaView build | `~/Downloads/paraview_localbuild/paraview/build` |
+| ParaView build (macOS) | `~/Downloads/paraview_localbuild/paraview/build` |
+| ParaView v6.0.0 (Andes) | `/ccs/proj/fus147/ParaView_localbuild/paraview_v6.0.0/build` |
+| ParaView master (Andes) | `/ccs/proj/fus147/ParaView_localbuild/paraview_master/build` |
+| Plugin for v6.0.0 (Andes) | `build_v6.0.0/lib64/paraview-6.0/plugins/WARPMReader/WARPMReader.so` |
+| Handshake bug report | `paraview_handshake_bug_report.md` |
 
 ## Legacy Workflow (for reference)
 
@@ -639,6 +749,9 @@ The Phase Space Reader has properties (Physical Slice Indices, Physical Node Ind
 5. **CMake target name conflict**: Plugin and module names must differ
 6. **pvpython hangs on import**: Authorize ParaView via GUI first (macOS security)
 7. **Plugin fails in shipping ParaView**: Must use developer-built ParaView (see Known Limitations)
+8. **Client-server: "Error parsing stream"**: Version mismatch between client and server (master vs release)
+9. **Client-server handshake fails**: Dev builds need `PARAVIEW_VERSION_SHORT` patch (see bug report)
+10. **Andes pvserver log**: Check `~/.paraview/pvserver-job-output.log` for server-side errors
 
 ## Development Reference
 
