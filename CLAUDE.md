@@ -15,6 +15,24 @@ A C++ ParaView reader plugin that loads native WARPM HDF5 simulation output with
 
 ## Build System
 
+### IMPORTANT: Always Use Tagged Releases
+
+**Always build ParaView from a tagged release (e.g., `v6.0.0`, `v6.0.1`), NOT from master.**
+
+For client-server mode, ParaView tagged releases only require **MAJOR.MINOR** to match between client and server.
+This means any 6.0.x client works with any 6.0.x server (official releases or tagged builds).
+
+| Client | Server | Compatible? |
+|--------|--------|-------------|
+| 6.0.0 | 6.0.1 | ✓ Yes |
+| 6.0.1 | 6.0.0 | ✓ Yes |
+| 6.0.x (any) | 6.0.x (any) | ✓ Yes |
+| 6.0.x | 6.1.x | ✗ No |
+
+**Why not master?** Development builds include a date stamp in `PARAVIEW_VERSION` (e.g., `6.0.20260128`)
+which causes handshake failures. Tagged releases use clean version numbers (e.g., `6.0`).
+See [GitLab Issue #23193](https://gitlab.kitware.com/paraview/paraview/-/issues/23193) for details.
+
 ### Prerequisites
 
 **ParaView Development Environment**: The binary ParaView app doesn't include C++ development headers. We build ParaView from source:
@@ -26,15 +44,15 @@ A C++ ParaView reader plugin that loads native WARPM HDF5 simulation output with
 
 **Verified versions:**
 
-*macOS (January 2025):*
-- ParaView 6.0
+*macOS (January 2026):*
+- ParaView v6.0.0 tag
 - VTK 9.5.2
 - Python 3.14
 - Apple Clang 17.0.0 (arm64)
 
 *Linux/Andes (January 2026):*
-- ParaView 6.0 (master, v6.0.1+)
-- VTK 9.6.0
+- ParaView v6.0.0 tag
+- VTK 9.5.2
 - Python 3.12.5
 - GCC 10.3.0
 
@@ -84,9 +102,8 @@ First launch of ParaView from the developer build may require authorization via 
 |--------|----------|----------|
 | System module 6.0.0 | `module load paraview/6.0.0` | Client-server with official 6.0.x client |
 | Local v6.0.0 build | `/ccs/proj/fus147/ParaView_localbuild/paraview_v6.0.0/build` | Plugin development matching system |
-| Local master build | `/ccs/proj/fus147/ParaView_localbuild/paraview_master/build` | Latest features (requires patched client) |
 
-**Recommended for client-server:** Use system ParaView 6.0.0 module with official 6.0.x client on macOS.
+**Recommended:** Use tagged release builds (v6.0.0, v6.0.1, etc.) for both client and server.
 
 #### Building Plugin Against System ParaView 6.0.0
 
@@ -114,9 +131,10 @@ print('Points:', pv.servermanager.Fetch(reader).GetNumberOfPoints())
 "
 ```
 
-#### Building Plugin Against Master Build
+#### Building Plugin Against Master Build (Not Recommended)
 
-For latest features (requires matching master client with handshake patch):
+**Note:** Master builds have client-server handshake issues due to date-stamped versions.
+Use tagged releases instead. This section preserved for reference only.
 
 **Required modules:**
 ```bash
@@ -156,40 +174,16 @@ For client-server deployments where pvserver runs on Linux and the ParaView clie
 
 **Requirements:**
 - Plugin must be built for **both** platforms
-- **Client and server ParaView versions must match** (see Version Compatibility below)
+- **Client and server must use tagged releases with matching MAJOR.MINOR** (see top of Build System section)
 - Server (Linux): Full plugin for data reading
 - Client (macOS): Full plugin for GUI/proxy registration
 
-**Version Compatibility (Critical):**
-
-| Client | Server | Works? | Notes |
-|--------|--------|--------|-------|
-| Official 6.0.1 | Official 6.0.0 | ✓ Yes | Official releases are compatible within 6.0.x |
-| Official 6.0.0 | Official 6.0.0 | ✓ Yes | Exact match always works |
-| Master build | 6.0.0 | ✗ No | Master has protocol/serialization changes |
-| Master build | Master build | ✓ Yes* | Must apply handshake patch (see below) |
-
-**Master Build Handshake Bug:** Development builds (master) fail client-server handshake due to
-version string format mismatch. The handshake regex expects `MAJOR.MINOR` but dev builds produce
-`MAJOR.MINOR.DATE` (e.g., `6.0.20260127`). See [paraview_handshake_bug_report.md](paraview_handshake_bug_report.md)
-for details and fix.
-
-**Patch for master-to-master connections:**
+**Client-server usage:**
 ```bash
-# Apply to BOTH client and server ParaView source trees
-sed -i 's/<< PARAVIEW_VERSION;/<< PARAVIEW_VERSION_SHORT;/g' \
-  Remoting/ServerManager/vtkPVSessionServer.cxx \
-  Remoting/ServerManager/vtkSMSessionClient.cxx
-# Rebuild
-ninja -C build
-```
-
-**Client-server usage (with system ParaView 6.0.0):**
-```bash
-# On Andes - use system module or local v6.0.0 build
+# On Andes - use system module or local v6.0.x build
 # System module launches pvserver via ORNL's pvsc scripts
 
-# On macOS client - must use ParaView 6.0.0 (not master!)
+# On macOS client - use ParaView built from matching 6.0.x tag
 # Connect and load plugin:
 # LoadPlugin('/path/to/WARPMReader.so', remote=True)  # loads on server
 # LoadPlugin('/path/to/WARPMReader.so', remote=False) # loads on client
