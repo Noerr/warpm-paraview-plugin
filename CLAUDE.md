@@ -593,8 +593,10 @@ queries `reader->GetNumberOfOutputPorts()` and matches it automatically.
 logic inline because the macro-generated function in `vtkMetaReader` has no linkable
 symbol in pre-built ParaView libraries.
 
-**Upstream contribution**: Submitted [ParaView MR !7637](https://gitlab.kitware.com/paraview/paraview/-/merge_requests/7637)
-to add this auto-detection to `vtkFileSeriesReader` itself. Once merged, the plugin can
+**Upstream contribution**: [ParaView MR !7637](https://gitlab.kitware.com/paraview/paraview/-/merge_requests/7637)
+was merged into ParaView main (February 2026), adding this auto-detection to `vtkFileSeriesReader`
+itself. Once included in a ParaView release (6.2, or possibly 6.1 — see
+[issue #23208](https://gitlab.kitware.com/paraview/paraview/-/issues/23208)), the plugin can
 simplify to just calling `Superclass::SetReader(reader)`.
 
 **References**:
@@ -619,10 +621,10 @@ multi-output-port file series support. This is self-contained within the plugin.
 | WARPMReader | Stock `vtkFileSeriesReader` | ✓ Yes |
 | WARPMPhaseSpaceReader | Bundled `vtkWARPMPhaseSpaceFileSeriesReader` | ✓ Yes |
 
-**MR !7637 context**: We contributed the auto-detection feature upstream to ParaView so
-future plugin developers won't need to create their own subclass. Once merged into a
-ParaView release, we could simplify our plugin to use the stock class, but this is
-optional - the current implementation will continue to work.
+**MR !7637 context**: The auto-detection feature was merged upstream into ParaView main
+(February 2026) so future plugin developers won't need to create their own subclass.
+Once available in a tagged ParaView release, we could simplify our plugin to use the
+stock class, but this is optional - the current bundled implementation will continue to work.
 
 ## Test Data
 
