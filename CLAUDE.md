@@ -38,13 +38,18 @@ See [GitLab Issue #23193](https://gitlab.kitware.com/paraview/paraview/-/issues/
 **ParaView Development Environment**: The binary ParaView app doesn't include C++ development headers. We build ParaView from source:
 
 ```
-~/Downloads/paraview_localbuild/paraview/       # ParaView source
-~/Downloads/paraview_localbuild/paraview/build/ # Build directory
+~/Downloads/paraview_localbuild/paraview_v6.1.0/source/  # ParaView v6.1.0 source (canonical)
+~/Downloads/paraview_localbuild/paraview_v6.1.0/build/   # Build directory
 ```
 
 **Verified versions:**
 
-*macOS (January 2026):*
+*macOS (April 2026):*
+- ParaView v6.1.0 tag
+- Python 3.14
+- Apple Clang (arm64)
+
+*macOS (January 2026, historical):*
 - ParaView v6.0.0 tag
 - VTK 9.5.2
 - Python 3.14
@@ -68,17 +73,17 @@ Note: `hdf5-mpi` (used by WARPM) is compatible with the build.
 ```bash
 cd <repo path>/warpm_paraview_plugin
 mkdir build
-cmake -S . -B build -DParaView_DIR=$HOME/Downloads/paraview_localbuild/paraview/build -Wno-dev
+cmake -S . -B build -DParaView_DIR=$HOME/Downloads/paraview_localbuild/paraview_v6.1.0/build -Wno-dev
 make -C build -j4
 ```
 
-Output: `build/lib/paraview-6.0/plugins/WARPMReader/WARPMReader.so`
+Output: `build/lib/paraview-6.1/plugins/WARPMReader/WARPMReader.so`
 
 ### Loading in ParaView
 
 **GUI:**
 1. Tools > Manage Plugins
-2. Load New > Browse to `build/lib/paraview-6.0/plugins/WARPMReader/WARPMReader.so`
+2. Load New > Browse to `build/lib/paraview-6.1/plugins/WARPMReader/WARPMReader.so`
 3. Optionally check "Auto Load"
 
 **pvpython:**
@@ -594,10 +599,12 @@ logic inline because the macro-generated function in `vtkMetaReader` has no link
 symbol in pre-built ParaView libraries.
 
 **Upstream contribution**: [ParaView MR !7637](https://gitlab.kitware.com/paraview/paraview/-/merge_requests/7637)
-was merged into ParaView main (February 2026), adding this auto-detection to `vtkFileSeriesReader`
-itself. Once included in a ParaView release (6.2, or possibly 6.1 — see
-[issue #23208](https://gitlab.kitware.com/paraview/paraview/-/issues/23208)), the plugin can
-simplify to just calling `Superclass::SetReader(reader)`.
+was merged into ParaView main on 2026-02-18, adding this auto-detection to `vtkFileSeriesReader`
+itself. **Not included in v6.1.0** (released 2026-03-31) — the 6.1 release branch was cut ~Jan 12,
+five weeks before the MR merged. Earliest release to include it will be **v6.2.0** (or a 6.1.x
+patch if cherry-picked; none exists as of 2026-04-20). See
+[issue #23208](https://gitlab.kitware.com/paraview/paraview/-/issues/23208). Once available in a
+tagged release, the plugin can simplify to just calling `Superclass::SetReader(reader)`.
 
 **References**:
 - [ParaView Discourse discussion](https://discourse.paraview.org/t/file-series-support-for-custom-time-unaware-plugin/15566)
@@ -622,9 +629,10 @@ multi-output-port file series support. This is self-contained within the plugin.
 | WARPMPhaseSpaceReader | Bundled `vtkWARPMPhaseSpaceFileSeriesReader` | ✓ Yes |
 
 **MR !7637 context**: The auto-detection feature was merged upstream into ParaView main
-(February 2026) so future plugin developers won't need to create their own subclass.
-Once available in a tagged ParaView release, we could simplify our plugin to use the
-stock class, but this is optional - the current bundled implementation will continue to work.
+on 2026-02-18 so future plugin developers won't need to create their own subclass.
+**Not in v6.1.0** (released 2026-03-31); earliest inclusion will be **v6.2.0**. Once available
+in a tagged ParaView release, we could simplify our plugin to use the stock class, but this is
+optional - the current bundled implementation will continue to work.
 
 ## Test Data
 
@@ -653,7 +661,8 @@ Phase space test files contain:
 | DG node utilities (current) | `../test_files/dg/nodal_dg_utils.py` |
 | DG node utilities (legacy) | `../test_files/dg/nodal_dg_utils_ColumnMajor.py` |
 | Mesh utilities | `../test_files/domains/structured_mesh_utils.py` |
-| ParaView build (macOS) | `~/Downloads/paraview_localbuild/paraview/build` |
+| ParaView v6.1.0 build (macOS) | `~/Downloads/paraview_localbuild/paraview_v6.1.0/build` |
+| ParaView v6.0.x dev build (macOS, historical) | `~/Downloads/paraview_localbuild/paraview/build` |
 | ParaView v6.0.0 (Andes) | `/ccs/proj/fus147/ParaView_localbuild/paraview_v6.0.0/build` |
 | ParaView master (Andes) | `/ccs/proj/fus147/ParaView_localbuild/paraview_master/build` |
 | Plugin for v6.0.0 (Andes) | `build_v6.0.0/lib64/paraview-6.0/plugins/WARPMReader/WARPMReader.so` |
@@ -673,7 +682,7 @@ This produces `.vts` files with linear elements (high-order broken into sub-elem
 
 **Developer Build** (required for plugin development):
 ```
-~/Downloads/paraview_localbuild/paraview/build/bin/
+~/Downloads/paraview_localbuild/paraview_v6.1.0/build/bin/
 ├── paraview.app/     # GUI application
 ├── pvpython          # Python interpreter with VTK/ParaView
 ├── pvbatch           # Batch processing
@@ -696,7 +705,7 @@ ERROR: Algorithm vtkWARPMReader did not create output for port 0 when asked
 by REQUEST_DATA_OBJECT and does not specify any DATA_TYPE_NAME.
 ```
 
-**Solution:** Use the ParaView built from source (`~/Downloads/paraview_localbuild/paraview/build/bin/paraview.app`).
+**Solution:** Use the ParaView built from source (`~/Downloads/paraview_localbuild/paraview_v6.1.0/build/bin/paraview.app`).
 
 ### Root Cause: C++ Symbol Visibility
 
@@ -761,7 +770,7 @@ Located in ParaView source at `Examples/Plugins/`:
 ### Testing with pvpython
 
 ```bash
-~/Downloads/paraview_localbuild/paraview/build/bin/pvpython -c "
+~/Downloads/paraview_localbuild/paraview_v6.1.0/build/bin/pvpython -c "
 import paraview.simple as pv
 pv.LoadPlugin('/path/to/WARPMReader.so', remote=False)
 reader = pv.WARPMReader(FileName='/path/to/file.warpm')
