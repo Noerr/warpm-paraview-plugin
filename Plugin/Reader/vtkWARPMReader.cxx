@@ -592,30 +592,33 @@ std::vector<int> vtkWARPMReader::BuildWarpmToVTKMapping3D(int orderX, int orderY
   for (int i = 1; i < orderZ; ++i) mapping[warpmIdx(0, orderY, i)] = vtkIdx++;     // Edge 11: 3->7
 
   // 3. Six faces (interior nodes only)
-  // Face 0: z=0 (bottom)
-  for (int j = 1; j < orderY; ++j)
-    for (int i = 1; i < orderX; ++i)
-      mapping[warpmIdx(i, j, 0)] = vtkIdx++;
-  // Face 1: z=orderZ (top)
-  for (int j = 1; j < orderY; ++j)
-    for (int i = 1; i < orderX; ++i)
-      mapping[warpmIdx(i, j, orderZ)] = vtkIdx++;
-  // Face 2: y=0 (front)
-  for (int k = 1; k < orderZ; ++k)
-    for (int i = 1; i < orderX; ++i)
-      mapping[warpmIdx(i, 0, k)] = vtkIdx++;
-  // Face 3: y=orderY (back)
-  for (int k = 1; k < orderZ; ++k)
-    for (int i = 1; i < orderX; ++i)
-      mapping[warpmIdx(i, orderY, k)] = vtkIdx++;
-  // Face 4: x=0 (left)
+  // VTK order per vtkHigherOrderHexahedron::PointIndexFromIJK:
+  // i-normal faces first, then j-normal, then k-normal. Low index before high.
+  // On each face, the tangential index listed first in (i,j,k) varies fastest.
+  // Face 0: x=0 (left, i-normal low) — j varies fastest, then k
   for (int k = 1; k < orderZ; ++k)
     for (int j = 1; j < orderY; ++j)
       mapping[warpmIdx(0, j, k)] = vtkIdx++;
-  // Face 5: x=orderX (right)
+  // Face 1: x=orderX (right, i-normal high)
   for (int k = 1; k < orderZ; ++k)
     for (int j = 1; j < orderY; ++j)
       mapping[warpmIdx(orderX, j, k)] = vtkIdx++;
+  // Face 2: y=0 (front, j-normal low) — i varies fastest, then k
+  for (int k = 1; k < orderZ; ++k)
+    for (int i = 1; i < orderX; ++i)
+      mapping[warpmIdx(i, 0, k)] = vtkIdx++;
+  // Face 3: y=orderY (back, j-normal high)
+  for (int k = 1; k < orderZ; ++k)
+    for (int i = 1; i < orderX; ++i)
+      mapping[warpmIdx(i, orderY, k)] = vtkIdx++;
+  // Face 4: z=0 (bottom, k-normal low) — i varies fastest, then j
+  for (int j = 1; j < orderY; ++j)
+    for (int i = 1; i < orderX; ++i)
+      mapping[warpmIdx(i, j, 0)] = vtkIdx++;
+  // Face 5: z=orderZ (top, k-normal high)
+  for (int j = 1; j < orderY; ++j)
+    for (int i = 1; i < orderX; ++i)
+      mapping[warpmIdx(i, j, orderZ)] = vtkIdx++;
 
   // 4. Interior volume nodes
   for (int k = 1; k < orderZ; ++k)
