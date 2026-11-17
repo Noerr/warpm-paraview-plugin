@@ -672,7 +672,7 @@ Phase space test files contain:
 
 The old Python-based conversion:
 ```bash
-source ~/Documents/warpm/warpm_venv/bin/activate
+source ~/projects/warpm/warpm_venv/bin/activate
 python ../test_files/dg/convert_dg_to_structured_vtk.py maxwell_2d_0000.h5
 ```
 
